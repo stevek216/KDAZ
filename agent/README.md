@@ -25,8 +25,14 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   discard scalar, and a seat-relative (max-n) value head. `policy_value(enc)` returns
   per-action logits + value (the MCTS leaf interface). Runs on CPU/CUDA and is end-to-end
   trainable (`kdagent/test_net.py`).
-- **TODO** — MCTS (chance-node handling + determinization), self-play corpus (append-only
-  JSONL of `{obs, legal, policy, value}`), trainer, arena.
+- **DONE — MCTS** (`kdagent/mcts/`): AlphaZero-style search with max-n vector backups and
+  explicit chance nodes **sampled** from the engine's true distribution (the draw has up to
+  48 outcomes, so sparse-sampled, not fully expanded); forced single-action plies collapse.
+  `RolloutEvaluator` (no net, validates search) and `NetEvaluator` (wraps the net). Tested
+  (`kdagent/mcts/test_mcts.py`): valid policy/value, full games to terminal under both
+  evaluators, seed determinism.
+- **TODO** — self-play corpus (append-only JSONL of `{obs, legal, policy, value}`), trainer,
+  arena. Root determinization (PIMC) for competitive play layers on later.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.
