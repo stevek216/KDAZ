@@ -31,8 +31,12 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   `RolloutEvaluator` (no net, validates search) and `NetEvaluator` (wraps the net). Tested
   (`kdagent/mcts/test_mcts.py`): valid policy/value, full games to terminal under both
   evaluators, seed determinism.
-- **TODO** — self-play corpus (append-only JSONL of `{obs, legal, policy, value}`), trainer,
-  arena. Root determinization (PIMC) for competitive play layers on later.
+- **DONE — self-play corpus generator** (`kdagent/selfplay.py`): plays MCTS games and writes
+  one JSONL record per decision (`{obs, legal, policy, to_act, value}`); `--evaluator rollout`
+  (pure MCTS, no net) or `net --ckpt`. `--no-write` for pure timing. e.g.
+  `python -m kdagent.selfplay --games 20 --sims 64 --out data/selfplay/rollout.jsonl`.
+- **TODO** — trainer (learn from the corpus) and arena (relative strength). Root
+  determinization (PIMC) for competitive play layers on later.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.
