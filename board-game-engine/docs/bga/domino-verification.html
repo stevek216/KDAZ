@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kingdomino domino data — visual verification</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 24px; color: #1a1a1a; background: #faf7f2; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: #555; margin-top: 0; max-width: 70ch; }
+  table { border-collapse: collapse; margin-top: 16px; }
+  th, td { border: 1px solid #d8d2c7; padding: 6px 10px; vertical-align: middle; }
+  th { background: #efe9df; text-align: left; position: sticky; top: 0; }
+  td.num { font-weight: 700; text-align: center; width: 40px; font-size: 16px; }
+  .sprite { width: 200px; height: 100px; background-image: url("tiles-2025.webp");
+            background-repeat: no-repeat; background-size: auto; image-rendering: auto;
+            border: 1px solid #bbb; position: relative; }
+  .sprite .mid { position: absolute; left: 100px; top: 0; bottom: 0; width: 0;
+                 border-left: 1px dashed rgba(255,255,255,.7); }
+  .pair { display: flex; gap: 8px; }
+  .sq { width: 132px; padding: 6px 8px; border-radius: 6px; color: #fff;
+        text-shadow: 0 1px 2px rgba(0,0,0,.45); font-weight: 600; }
+  .sq small { display:block; font-weight: 400; opacity: .9; }
+  .crowns { font-size: 15px; }
+  /* terrain colors (approx the game art) */
+  .wheat  { background: #e6b22e; } .forest { background: #2f7d32; }
+  .lake   { background: #2f93d6; } .grass  { background: #7cb342; }
+  .swamp  { background: #6f6048; } .mine   { background: #454a4f; }
+  tr:nth-child(even) td { background: #f3eee5; }
+  .legend span { display:inline-block; padding:2px 8px; border-radius:4px; color:#fff; margin-right:6px; }
+</style>
+</head>
+<body>
+<h1>Kingdomino — domino data vs. BoardGameArena sprites</h1>
+<p class="sub">
+  Left column is the actual BGA tile art (cropped from <code>tiles-2025.webp</code>, the
+  sheet pulled from your game). Right column is what the engine's <code>DOMINOES</code> table
+  says that tile contains. They should match square-for-square (terrain + crown count), in
+  left→right order. The sheet's own <em>square-composition</em> list (the "Dominoes list"
+  popup) was already confirmed to match exactly: wheat 21×0 / 5×1, forest 16×0 / 6×1,
+  lake 12×0 / 6×1, grassland 10×0 / 2×1 / 2×2, swamp 6×0 / 2×1 / 2×2, mine 1×0 / 1×1 / 3×2 /
+  1×3 (96 squares, 39 crowns). This page is the per-tile pairing check.
+</p>
+<p class="legend">
+  <span class="wheat">wheat (field)</span><span class="forest">forest</span>
+  <span class="lake">lake</span><span class="grass">grassland</span>
+  <span class="swamp">swamp</span><span class="mine">mine (mountain)</span>
+</p>
+<table>
+  <thead><tr><th>#</th><th>BGA sprite (authoritative art)</th><th>Engine data (left&nbsp;|&nbsp;right)</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+// Engine DOMINOES table (mirrors src/components/domino.rs). [number, [aTerrain,aCrowns], [bTerrain,bCrowns]]
+const T = { W:'wheat', F:'forest', L:'lake', G:'grass', S:'swamp', M:'mine' };
+const NAME = { wheat:'wheat (field)', forest:'forest', lake:'lake', grass:'grassland', swamp:'swamp', mine:'mine (mountain)' };
+const DOMINOES = [
+  [1,['W',0],['W',0]],[2,['W',0],['W',0]],[3,['F',0],['F',0]],[4,['F',0],['F',0]],
+  [5,['F',0],['F',0]],[6,['F',0],['F',0]],[7,['L',0],['L',0]],[8,['L',0],['L',0]],
+  [9,['L',0],['L',0]],[10,['G',0],['G',0]],[11,['G',0],['G',0]],[12,['S',0],['S',0]],
+  [13,['W',0],['F',0]],[14,['W',0],['L',0]],[15,['W',0],['G',0]],[16,['W',0],['S',0]],
+  [17,['F',0],['L',0]],[18,['F',0],['G',0]],[19,['W',1],['F',0]],[20,['W',1],['L',0]],
+  [21,['W',1],['G',0]],[22,['W',1],['S',0]],[23,['W',1],['M',0]],[24,['F',1],['W',0]],
+  [25,['F',1],['W',0]],[26,['F',1],['W',0]],[27,['F',1],['W',0]],[28,['F',1],['L',0]],
+  [29,['F',1],['G',0]],[30,['L',1],['W',0]],[31,['L',1],['W',0]],[32,['L',1],['F',0]],
+  [33,['L',1],['F',0]],[34,['L',1],['F',0]],[35,['L',1],['F',0]],[36,['W',0],['G',1]],
+  [37,['L',0],['G',1]],[38,['W',0],['S',1]],[39,['G',0],['S',1]],[40,['M',1],['W',0]],
+  [41,['W',0],['G',2]],[42,['L',0],['G',2]],[43,['W',0],['S',2]],[44,['G',0],['S',2]],
+  [45,['M',2],['W',0]],[46,['S',0],['M',2]],[47,['S',0],['M',2]],[48,['W',0],['M',3]],
+];
+
+// Sprite layout derived from the live page: column-major, 10 rows x 5 cols, 200x100 tiles.
+// domino n -> col=floor((n-1)/10), row=(n-1)%10; bgPos = -(3+207*col), -(4+109*row).
+function bgPos(n){ const i=n-1; const col=Math.floor(i/10), row=i%10;
+  return `-${3+207*col}px -${4+109*row}px`; }
+
+function crowns(c){ return c>0 ? ' '+'👑'.repeat(c) : ''; }
+function sqHtml(code, c){ const t=T[code];
+  return `<div class="sq ${t}">${NAME[t]}<small class="crowns">crowns: ${c}${crowns(c)}</small></div>`; }
+
+const tb = document.getElementById('rows');
+for (const [n,a,b] of DOMINOES){
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    `<td class="num">${n}</td>` +
+    `<td><div class="sprite" style="background-position:${bgPos(n)}"><div class="mid"></div></div></td>` +
+    `<td><div class="pair">${sqHtml(a[0],a[1])}${sqHtml(b[0],b[1])}</div></td>`;
+  tb.appendChild(tr);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+[package]
+name = "kingdomino-engine"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+description = "Kingdomino (Mighty Duel) board game engine and AlphaZero agent"
+license = "MIT"
+readme = "README.md"
+
+[lib]
+name = "kingdomino_engine"
+path = "src/lib.rs"
+
+[dependencies]
+# Deterministic, seedable RNG so games are reproducible for self-play.
+rand = "0.8"
+rand_chacha = "0.3"
+
+[dev-dependencies]
+# Property-based testing for rule invariants.
+proptest = "1"
+
+[profile.release]
+# Self-play throughput matters; optimize aggressively.
+lto = "fat"
+codegen-units = 1
+panic = "abort"

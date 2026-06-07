@@ -1,0 +1,16 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# Claude Code local (machine-specific) settings
+.claude/settings.local.json
+
+# Derived dump of the rules PDF — regenerate with:
+#   pdftotext -layout "Docs/rules.pdf" rules_extracted.txt
+/rules_extracted.txt
+
+# Rust build output (also covered by board-game-engine/.gitignore)
+/target/

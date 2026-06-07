@@ -1,0 +1,25 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock: keep it for the binary/agent (reproducible builds).
+# If this ever becomes a pure library crate, consider ignoring it instead.
+
+# AlphaZero artifacts
+checkpoints/
+models/
+*.pt
+*.pth
+*.ot
+*.safetensors
+runs/
+logs/
+data/selfplay/
+replay_buffer/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
