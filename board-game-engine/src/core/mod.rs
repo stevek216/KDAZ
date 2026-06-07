@@ -4,14 +4,20 @@
 //! state — with no global mutable state, so the engine is safe to run across many
 //! self-play games in parallel. See `docs/engine-design.md` §1, §3–§6.
 
+pub mod action;
 pub mod setup;
 pub mod state;
+pub mod turn;
 
+pub use action::{Action, Decision};
 pub use setup::new_game;
 pub use state::{
     Board, Cell, GameState, Phase, Slot, CENTER, GRID, LINE, MAX_PLAYERS, NO_OWNER, STORE,
 };
+pub use turn::{
+    apply_action, apply_chance, chance_outcomes, current_decision, is_chance, is_terminal,
+    legal_actions,
+};
 
 // Coming in the build-order chunks (docs/engine-design.md §9):
-// pub mod action;   // Action / Decision enums (chunk 3)
-// pub mod turn;     // current_decision / legal_actions / apply_action / chance / terminal (chunk 3–4)
+// terminal_value + scoring (territory flood-fill, variant bonuses, tie-break) — chunk 4.

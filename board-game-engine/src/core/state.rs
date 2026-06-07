@@ -210,7 +210,11 @@ pub struct GameState {
     /// Dominoes being claimed this round (next round's `current_line`).
     pub next_line: [Slot; LINE],
     /// Index into `current_line` of the king whose turn it is (play order = ascending slot).
+    /// During `StartClaim` it indexes `claim_order` instead (the starting-round claim step).
     pub turn_cursor: u8,
+    /// Starting-round claim order: the seat that claims 1st, 2nd, … (set by the `StartOrder`
+    /// chance node, §6.2). Only meaningful during setup.
+    pub claim_order: [u8; LINE],
 
     /// Dominoes still in the draw pile (bit `d` set ⇒ domino id `d` remains). The draw is a
     /// chance node, so only membership is stored, never order (§6).
@@ -235,6 +239,7 @@ impl GameState {
             current_line: [Slot::EMPTY; LINE],
             next_line: [Slot::EMPTY; LINE],
             turn_cursor: 0,
+            claim_order: [0; LINE],
             remaining: 0,
             draw_buf: [NO_DOMINO; LINE],
             draw_count: 0,

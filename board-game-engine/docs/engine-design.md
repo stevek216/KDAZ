@@ -379,10 +379,15 @@ same-terrain squares); still tied → **shared victory** (rulebook p.3).
    loads the full deck, and positions the game at the first `Phase::Draw` chance node. (The
    draws/`StartOrder`/`StartClaim` are driven by the chunk-3 turn loop, since the RNG lives in
    the driver, not `new_game`.) Guarded by Copy/size + cell-packing + bbox + setup tests.
-3. **The turn loop** — `current_decision` / `legal_actions` / `apply_action` /
-   `chance_outcomes` / `apply_chance` for `Claim`, `Place` (incl. legality §5), `Discard`,
-   line rotation, and round/cursor advance. Full random self-play runs to terminal across
-   the 12 rounds.
+3. **The turn loop — DONE (2026-06-07).** `core/action.rs` (`Action`/`Decision`),
+   `rules/place.rs` (placement legality + enumeration, §5), and `core/turn.rs`
+   (`current_decision` / `legal_actions` / `apply_action` / `chance_outcomes` / `apply_chance`
+   for `Draw`, `StartOrder`, `StartClaim`, `Place`/`Discard`, `Claim`, line rotation,
+   round/cursor advance, end-of-game). Single-draw chance model (§6.1) + distinct starting
+   orders via `next_permutation` (§6.2). Random self-play runs to terminal for 2p and 4p with
+   domino conservation, the 7×7 bound, and seed determinism asserted (`tests/full_game.rs`).
+   `terminal_value` is **not** here yet — it needs scoring (chunk 4); the game reaches
+   `Phase::GameOver` and `Decision::Terminal`, but its value vector is chunk 4.
 4. **Scoring + terminal value** — territory flood-fill, variant bonuses, tie-break.
 5. **Property tests** — square conservation (48 = placed + discarded across both boards),
    7×7 bound never violated, every claimed domino placed-or-discarded, a full game from a

@@ -6,14 +6,16 @@
 //! the game at the first `Phase::Draw` chance node (filling the starting line). The turn
 //! loop (chunk 3) drives draws → starting claims → play rounds from there.
 
-use crate::core::state::{Board, GameState, Phase, FULL_DECK, MAX_PLAYERS};
+use crate::core::state::{Board, GameState, Phase, FULL_DECK, LINE, MAX_PLAYERS};
 
-/// Create a new game for `player_count` seats (2..=MAX_PLAYERS). The Mighty Duel target uses
-/// 2. Panics on an out-of-range count — that is a caller bug, not valid input.
+/// Create a new game for `player_count` seats. The Mighty Duel target uses 2. Supported
+/// counts are those that evenly divide the 4-wide draft line (2 or 4 → 2 or 1 kings each);
+/// 3-player Kingdomino uses a different draw/discard mechanic and is deferred (CLAUDE §5).
+/// Panics on an unsupported count — a caller bug, not valid input.
 pub fn new_game(player_count: u8) -> GameState {
     assert!(
-        (2..=MAX_PLAYERS as u8).contains(&player_count),
-        "player_count must be 2..={MAX_PLAYERS}"
+        (2..=MAX_PLAYERS as u8).contains(&player_count) && LINE % player_count as usize == 0,
+        "player_count must be 2 or 4 (must divide the {LINE}-wide draft line); 3p is deferred"
     );
     let mut gs = GameState::blank();
     gs.player_count = player_count;
