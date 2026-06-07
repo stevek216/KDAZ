@@ -121,11 +121,10 @@ The engine is **algorithm-agnostic**. Primary plan: **AlphaZero-style MCTS**, ad
   `docs/bga/README.md`); the `const DOMINOES` table in `src/components/domino.rs` is
   transcribed from it and guarded by tally tests. BGA's `mountain` = the mine terrain.
   **Do not fabricate tile data** (Space Base was burned by a fabricated placeholder CSV).
-- **Middle Kingdom / Harmony** — settled (2026-06-07) that both are **purely additive
-  bonuses that never constrain legal play** (a board may have gaps / an off-center castle;
-  it just forfeits the points). The only detail left is the exact geometric test for
-  "complete" / "centered" — see `docs/engine-design.md` §7; verify against BoardGameArena
-  scoring before freezing the scoring tests.
+- **Middle Kingdom / Harmony — RESOLVED (2026-06-07).** Both are **purely additive bonuses
+  that never constrain legal play** (a board may have gaps / an off-center castle; it just
+  forfeits the points). Geometric tests settled and implemented in `rules/score.rs` (see
+  `docs/engine-design.md` §7).
 
 ## 7. Conventions
 

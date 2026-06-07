@@ -336,13 +336,12 @@ a board can earn both, either, or neither.
 Variant toggles live in a small `Rules`/config carried alongside (or as `const` features
 for the target build); the target enables both Harmony and Middle Kingdom.
 
-> **Q5 — variant bonus definitions (mostly resolved).** Non-enforcement is **settled**
-> (2026-06-07): both are additive bonuses, never constraints. The remaining detail is the
-> exact geometric test for *centered* / *complete*. The bounding-box readings above are the
-> natural interpretation (and imply a kingdom whose footprint is smaller than `GRID×GRID`
-> can earn neither bonus — consistent with "complete grid" / "centered in the grid"). To be
-> verified empirically against **BoardGameArena's** scoring on a live game before freezing
-> the scoring tests (CLAUDE §6).
+> **Q5 — variant bonus definitions — RESOLVED (2026-06-07).** Both bonuses are additive,
+> never constraints. The geometric tests are the bounding-box readings above: **Harmony** =
+> a complete gap-free `GRID×GRID` (`filled == GRID²−1`); **Middle Kingdom** = the castle is
+> the center of a full `GRID×GRID` bounding box (extends `GRID/2` in every direction, gaps
+> allowed). A kingdom whose footprint is smaller than `GRID×GRID` earns neither — consistent
+> with "complete grid" / "centered in the grid". Implemented and tested in `rules/score.rs`.
 
 ### 7.1 Terminal value
 
@@ -364,7 +363,7 @@ same-terrain squares); still tied → **shared victory** (rulebook p.3).
 - **Q2** — placement encoding for the policy head (engine-neutral).
 - **Q3** — castle-wild connection precise reading.
 - **Q4** — StartOrder as a chance node (kept).
-- **Q5** — Harmony / Middle Kingdom exact definitions (confirm vs. rulebook/FAQ).
+- **Q5 — RESOLVED.** Harmony / Middle Kingdom definitions settled & implemented (§7).
 - **Q6** — terminal value convention (trainer-time choice).
 
 ## 9. Suggested build order (chunks)
@@ -395,10 +394,13 @@ same-terrain squares); still tied → **shared victory** (rulebook p.3).
    (set by `new_game` = Mighty Duel; `new_game_with` to choose) toggles the additive bonuses.
    Tested against the rulebook's 7-forest×3=21 / 9-lake×0=0 examples, separate-territory
    scoring, the Harmony/Middle independence cases, and value-vector well-formedness.
-5. **Property tests** — square conservation (48 = placed + discarded across both boards),
-   7×7 bound never violated, every claimed domino placed-or-discarded, a full game from a
-   fixed seed reproduces, scoring matches hand-computed examples (incl. the rulebook's
-   23-point sample on p.4).
+5. **Property tests — DONE (2026-06-07).** `tests/properties.rs` fuzzes whole games (2p+4p)
+   via a generated selector vector (proptest-shrinkable) and asserts, at every node: castle
+   intact, the 7×7 bound never violated, `filled` even + monotonic + bounded, every player
+   node has a legal action, chance probabilities sum to 1; and at terminal: full domino
+   conservation (placed + discarded == 24/seat for 2p), `filled == 2×placed`, deck empty, and
+   a well-formed value vector. Plus the rulebook scoring examples in `rules/score.rs` and seed
+   determinism in `tests/full_game.rs`.
 6. **PyO3 bridge + agent** — mirror `agent/` from Space Base once the engine is green.
 ```
 
