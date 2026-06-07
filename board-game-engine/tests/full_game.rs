@@ -3,8 +3,8 @@
 //! chunk 5. Unit-level invariants live beside the code; this file checks whole-game properties.
 
 use kingdomino_engine::core::{
-    apply_action, apply_chance, current_decision, legal_actions, new_game, Decision, GameState,
-    GRID,
+    apply_action, apply_chance, current_decision, legal_actions, new_game, terminal_value,
+    Decision, GameState, GRID,
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -68,5 +68,13 @@ fn four_player_game_runs_to_terminal() {
         // Every placed domino contributes 2 squares; the rest were discarded. Each seat drew
         // 12 dominoes (12 lines × 1 king) → 48 total, so placed+discarded across seats == 48.
         assert!(total_squares <= 96 && total_squares % 2 == 0, "seed {seed}");
+
+        // A terminal state yields a well-formed max-n value vector that sums to 1.0.
+        let v = terminal_value(&gs).expect("terminal state has a value");
+        let sum: f32 = v.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-5,
+            "value vector sums to 1 (seed {seed})"
+        );
     }
 }

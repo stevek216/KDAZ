@@ -32,6 +32,29 @@ pub const NO_OWNER: u8 = u8::MAX;
 /// A bitmask of all 48 dominoes present (the full deck).
 pub const FULL_DECK: u64 = (1u64 << 48) - 1;
 
+/// Optional end-scoring bonuses (`docs/engine-design.md` §7). Both are **purely additive** —
+/// they never constrain legal play, only the final score. Independent of each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Variants {
+    /// Harmony: +5 if the kingdom is a complete gap-free `GRID×GRID`.
+    pub harmony: bool,
+    /// Middle Kingdom: +10 if the castle is centered in the kingdom's bounding box.
+    pub middle_kingdom: bool,
+}
+
+impl Variants {
+    /// The target configuration: Mighty Duel with both bonuses enabled.
+    pub const MIGHTY_DUEL: Variants = Variants {
+        harmony: true,
+        middle_kingdom: true,
+    };
+    /// Plain scoring, no bonuses (base game).
+    pub const NONE: Variants = Variants {
+        harmony: false,
+        middle_kingdom: false,
+    };
+}
+
 /// One backing-store cell, packed into a byte: terrain code in the low 3 bits
 /// (`0` = empty, `1..=6` = `Terrain::index() + 1`, `7` = castle), crowns in bits 3–4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -199,6 +222,8 @@ pub enum Phase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameState {
     pub player_count: u8,
+    /// Which optional scoring bonuses are active (affects `terminal_value` only).
+    pub variants: Variants,
     pub phase: Phase,
     /// Whose decision is pending (seat index). Not meaningful at chance nodes.
     pub to_act: u8,
@@ -233,6 +258,7 @@ impl GameState {
     pub(crate) fn blank() -> Self {
         Self {
             player_count: 0,
+            variants: Variants::NONE,
             phase: Phase::Draw,
             to_act: 0,
             round: 0,

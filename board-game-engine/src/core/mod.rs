@@ -11,13 +11,11 @@ pub mod turn;
 
 pub use action::{Action, Decision};
 pub use setup::new_game;
+pub use state::Variants;
 pub use state::{
     Board, Cell, GameState, Phase, Slot, CENTER, GRID, LINE, MAX_PLAYERS, NO_OWNER, STORE,
 };
 pub use turn::{
     apply_action, apply_chance, chance_outcomes, current_decision, is_chance, is_terminal,
-    legal_actions,
+    legal_actions, terminal_value,
 };
-
-// Coming in the build-order chunks (docs/engine-design.md §9):
-// terminal_value + scoring (territory flood-fill, variant bonuses, tie-break) — chunk 4.

@@ -388,7 +388,13 @@ same-terrain squares); still tied → **shared victory** (rulebook p.3).
    domino conservation, the 7×7 bound, and seed determinism asserted (`tests/full_game.rs`).
    `terminal_value` is **not** here yet — it needs scoring (chunk 4); the game reaches
    `Phase::GameOver` and `Decision::Terminal`, but its value vector is chunk 4.
-4. **Scoring + terminal value** — territory flood-fill, variant bonuses, tie-break.
+4. **Scoring + terminal value — DONE (2026-06-07).** `rules/score.rs` (`score_board` →
+   `ScoreBreakdown`: territory flood-fill `Σ size×crowns`, Harmony +5, Middle Kingdom +10,
+   largest-territory tie-breaker) + `core/turn.rs` `terminal_value` (max-n vector; highest
+   total, then largest territory, then shared `1/w`). A `Variants` config on `GameState`
+   (set by `new_game` = Mighty Duel; `new_game_with` to choose) toggles the additive bonuses.
+   Tested against the rulebook's 7-forest×3=21 / 9-lake×0=0 examples, separate-territory
+   scoring, the Harmony/Middle independence cases, and value-vector well-formedness.
 5. **Property tests** — square conservation (48 = placed + discarded across both boards),
    7×7 bound never violated, every claimed domino placed-or-discarded, a full game from a
    fixed seed reproduces, scoring matches hand-computed examples (incl. the rulebook's

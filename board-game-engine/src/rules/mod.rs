@@ -5,8 +5,7 @@
 //! `docs/engine-design.md` §5 and §7.
 
 pub mod place;
+pub mod score;
 
 pub use place::{anchor_of, cell_of, has_any_placement, legal_placements, placement_legal};
-
-// Coming in the build-order chunks (docs/engine-design.md §9):
-// pub mod score;    // territory flood-fill, variant bonuses, tie-break ranking (chunk 4)
+pub use score::{score_board, ScoreBreakdown};

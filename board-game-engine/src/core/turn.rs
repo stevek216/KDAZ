@@ -10,8 +10,9 @@ use rand::Rng;
 
 use crate::components::{domino, DominoDef, DominoId};
 use crate::core::action::{Action, Decision};
-use crate::core::state::{GameState, Phase, Slot, LINE, NO_OWNER};
+use crate::core::state::{GameState, Phase, Slot, LINE, MAX_PLAYERS, NO_OWNER};
 use crate::rules::place::{cell_of, legal_placements};
+use crate::rules::score::score_board;
 
 // =================================================================================
 // Decision classification
@@ -32,6 +33,39 @@ pub fn is_terminal(gs: &GameState) -> bool {
 
 pub fn is_chance(gs: &GameState) -> bool {
     matches!(gs.phase, Phase::Draw | Phase::StartOrder)
+}
+
+// =================================================================================
+// Terminal value (max-n vector, §7.1)
+// =================================================================================
+
+/// The per-seat outcome vector at a terminal state, or `None` if the game is not over.
+/// Entry `i` is seat `i`'s value (absolute seat index; dead seats are `0.0`).
+///
+/// Ranking (rulebook p.3): highest total score wins; ties broken by the **largest single
+/// territory**; a remaining tie is a **shared victory**. Co-winners split `1.0` evenly
+/// (`1/w` each — so 2p win/loss = 1.0/0.0 and a 2p shared = 0.5/0.5). The convention is
+/// swappable at trainer time; the engine just reports the ranking (CLAUDE §4, Q6).
+pub fn terminal_value(gs: &GameState) -> Option<[f32; MAX_PLAYERS]> {
+    if gs.phase != Phase::GameOver {
+        return None;
+    }
+    let pc = gs.player_count as usize;
+    // (total score, largest territory) per seat — lexicographic comparison = the rulebook order.
+    let mut ranked = [(0u32, 0u32); MAX_PLAYERS];
+    for (seat, slot) in ranked.iter_mut().enumerate().take(pc) {
+        let s = score_board(&gs.boards[seat], gs.variants);
+        *slot = (s.total, s.largest_territory);
+    }
+    let best = *ranked[..pc].iter().max().expect("at least one seat");
+    let winners = ranked[..pc].iter().filter(|&&r| r == best).count() as f32;
+    let mut out = [0.0f32; MAX_PLAYERS];
+    for (seat, &r) in ranked[..pc].iter().enumerate() {
+        if r == best {
+            out[seat] = 1.0 / winners;
+        }
+    }
+    Some(out)
 }
 
 /// The domino the acting seat must place this turn (valid in `Phase::Place`).
@@ -343,6 +377,44 @@ mod tests {
     use crate::core::state::{GRID, MAX_PLAYERS};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    #[test]
+    fn terminal_value_ranks_and_shares() {
+        use crate::components::Terrain;
+        use crate::core::state::CENTER;
+
+        // Not terminal -> None.
+        let gs = new_game(2);
+        assert!(terminal_value(&gs).is_none());
+
+        // Build a finished 2p game by hand: seat 0 outscores seat 1.
+        let mut gs = new_game(2);
+        gs.phase = Phase::GameOver;
+        // seat 0: a 3-forest territory with 2 crowns = 6 points.
+        for k in 0..3u8 {
+            let crowns = if k == 0 { 2 } else { 0 };
+            gs.boards[0].place_square(CENTER, CENTER - 1 - k, Terrain::Forest, crowns);
+        }
+        // seat 1: a 2-lake territory with 1 crown = 2 points.
+        for k in 0..2u8 {
+            let crowns = if k == 0 { 1 } else { 0 };
+            gs.boards[1].place_square(CENTER, CENTER + 1 + k, Terrain::Lake, crowns);
+        }
+        let v = terminal_value(&gs).unwrap();
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[1], 0.0);
+        assert_eq!(v[2], 0.0); // dead seat
+
+        // A full tie (identical boards) -> shared victory, 0.5 each.
+        let mut tie = new_game(2);
+        tie.phase = Phase::GameOver;
+        for seat in 0..2 {
+            tie.boards[seat].place_square(CENTER, CENTER - 1, Terrain::Forest, 1);
+        }
+        let vt = terminal_value(&tie).unwrap();
+        assert_eq!(vt[0], 0.5);
+        assert_eq!(vt[1], 0.5);
+    }
 
     #[test]
     fn start_order_counts() {

@@ -6,19 +6,26 @@
 //! the game at the first `Phase::Draw` chance node (filling the starting line). The turn
 //! loop (chunk 3) drives draws → starting claims → play rounds from there.
 
-use crate::core::state::{Board, GameState, Phase, FULL_DECK, LINE, MAX_PLAYERS};
+use crate::core::state::{Board, GameState, Phase, Variants, FULL_DECK, LINE, MAX_PLAYERS};
 
-/// Create a new game for `player_count` seats. The Mighty Duel target uses 2. Supported
+/// Create a new game for `player_count` seats with the **Mighty Duel** scoring variants
+/// (Harmony + Middle Kingdom) — the project target. See [`new_game_with`] to choose variants.
+pub fn new_game(player_count: u8) -> GameState {
+    new_game_with(player_count, Variants::MIGHTY_DUEL)
+}
+
+/// Create a new game for `player_count` seats with explicit scoring `variants`. Supported
 /// counts are those that evenly divide the 4-wide draft line (2 or 4 → 2 or 1 kings each);
 /// 3-player Kingdomino uses a different draw/discard mechanic and is deferred (CLAUDE §5).
 /// Panics on an unsupported count — a caller bug, not valid input.
-pub fn new_game(player_count: u8) -> GameState {
+pub fn new_game_with(player_count: u8, variants: Variants) -> GameState {
     assert!(
         (2..=MAX_PLAYERS as u8).contains(&player_count) && LINE % player_count as usize == 0,
         "player_count must be 2 or 4 (must divide the {LINE}-wide draft line); 3p is deferred"
     );
     let mut gs = GameState::blank();
     gs.player_count = player_count;
+    gs.variants = variants;
     for seat in 0..MAX_PLAYERS {
         gs.boards[seat] = if (seat as u8) < player_count {
             Board::with_castle()
