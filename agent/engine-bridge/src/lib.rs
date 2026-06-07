@@ -29,6 +29,8 @@ use kingdomino_engine::core::{
 };
 use kingdomino_engine::rules::{cell_of, score_board};
 
+mod mcts;
+
 fn phase_str(p: Phase) -> &'static str {
     match p {
         Phase::Draw => "draw",
@@ -149,6 +151,23 @@ fn observation_json(gs: &GameState) -> Value {
         "seats": seats,
         "scores": scores,
     })
+}
+
+/// The public observation as a JSON string (shared by `Game.observation` and the Rust
+/// batched self-play, so both producers emit an identical schema).
+pub(crate) fn obs_json(gs: &GameState) -> String {
+    observation_json(gs).to_string()
+}
+
+/// A JSON array of legal actions built from an `Action` buffer (same schema as
+/// `Game.legal_actions`), for the Rust self-play recorder.
+pub(crate) fn legal_json(buf: &[Action]) -> String {
+    let arr: Vec<Value> = buf
+        .iter()
+        .enumerate()
+        .map(|(i, &a)| action_json(a, i))
+        .collect();
+    Value::Array(arr).to_string()
 }
 
 /// A thin, cheaply-clonable handle around one `GameState` plus its sampling RNG.
@@ -304,5 +323,6 @@ fn domino_table() -> String {
 fn kingdomino(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Game>()?;
     m.add_function(wrap_pyfunction!(domino_table, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts::selfplay_batch, m)?)?;
     Ok(())
 }

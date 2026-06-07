@@ -14,7 +14,9 @@ crate-type = ["cdylib"]
 # Same rand/rand_chacha as the engine so the `Rng` types match `apply_chance`.
 rand = "0.8"
 rand_chacha = "0.3"
+rand_distr = "0.4"  # Gamma -> Dirichlet root noise for self-play exploration
 serde_json = "1"
+rayon = "1"         # parallel batched self-play across cores (pure-Rust rollout tier)
 kingdomino-engine = { path = "../../board-game-engine" }
 
 [dependencies.pyo3]
