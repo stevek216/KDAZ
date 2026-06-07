@@ -15,9 +15,14 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   `../.venv/Scripts/python -m maturin develop --release`; `smoke_test.py` drives full games.
 - **DONE — feature schema** (`docs/feature-schema.md`): the engine↔encoder contract
   (board planes + draft tokens + global; spatial place head, claim pointer; max-n value).
-- **TODO** — encoder (NumPy/Torch), network, MCTS (with chance-node handling +
-  determinization), self-play corpus (append-only JSONL of `{obs, legal, policy, value}`),
-  trainer, arena.
+- **DONE — encoder** (`kdagent/encoder.py`): `observation()` → tensors (per-seat 13×13
+  board planes, 8 draft-line tokens, global vector) + an action batch aligned to
+  `legal_actions()` (place = row/col/rot, claim = slot). `encode_obs` re-encodes raw corpus
+  inputs. Tested in `kdagent/test_encoder.py` (shapes, plane partition, action alignment,
+  raw round-trip, finite/bounded over random play).
+- **TODO** — network (spatial place head + claim pointer + max-n value), MCTS (chance-node
+  handling + determinization), self-play corpus (append-only JSONL of
+  `{obs, legal, policy, value}`), trainer, arena.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.
