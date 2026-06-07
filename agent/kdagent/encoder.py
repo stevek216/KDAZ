@@ -66,6 +66,7 @@ class Actions:
     col: np.ndarray      # [A] int, place anchor col (else -1)
     rot: np.ndarray      # [A] int, place rotation 0..3 (else -1)
     slot: np.ndarray     # [A] int, claim line slot 0..3 (else -1)
+    line_tok: np.ndarray  # [A] int, claim's index into the 8 line tokens (else -1)
 
 
 @dataclass
@@ -204,6 +205,7 @@ def encode_obs(obs: dict, legal: list, table=None) -> Encoded:
     a_col = np.full(n, -1, dtype=np.int64)
     a_rot = np.full(n, -1, dtype=np.int64)
     a_slot = np.full(n, -1, dtype=np.int64)
+    a_ltok = np.full(n, -1, dtype=np.int64)
     for a in legal:
         i = a["index"]
         if a["type"] == "place":
@@ -212,6 +214,7 @@ def encode_obs(obs: dict, legal: list, table=None) -> Encoded:
         elif a["type"] == "claim":
             a_type[i] = A_CLAIM
             a_slot[i] = a["slot"]
+            a_ltok[i] = a["slot"] if claim_line_is_current else 4 + a["slot"]
         else:  # discard
             a_type[i] = A_DISCARD
 
@@ -219,6 +222,6 @@ def encode_obs(obs: dict, legal: list, table=None) -> Encoded:
         board=board,
         lines=lines,
         glob=g,
-        actions=Actions(a_type, a_row, a_col, a_rot, a_slot),
+        actions=Actions(a_type, a_row, a_col, a_rot, a_slot, a_ltok),
         player_count=pc,
     )

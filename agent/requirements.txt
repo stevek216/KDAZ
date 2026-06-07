@@ -1,5 +1,12 @@
-# Agent Python deps (install into agent/.venv). Torch is CPU by default on Windows;
-# for CUDA, install the matching wheel from pytorch.org instead.
+# Agent Python deps. The venv is created with --system-site-packages so it reuses the
+# globally-installed CUDA PyTorch (and numpy) — no multi-GB re-download:
+#
+#   python -m venv --system-site-packages .venv
+#   .venv/Scripts/python -m pip install maturin    # the only thing not inherited
+#   (cd engine-bridge && ../.venv/Scripts/python -m maturin develop --release)
+#
+# Listed here for reference / fresh installs without a global torch (CPU wheel by default;
+# for CUDA install the matching wheel from pytorch.org instead).
 maturin>=1.0,<2.0
 numpy
 torch

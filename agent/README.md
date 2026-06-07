@@ -20,9 +20,13 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   `legal_actions()` (place = row/col/rot, claim = slot). `encode_obs` re-encodes raw corpus
   inputs. Tested in `kdagent/test_encoder.py` (shapes, plane partition, action alignment,
   raw round-trip, finite/bounded over random play).
-- **TODO** — network (spatial place head + claim pointer + max-n value), MCTS (chance-node
-  handling + determinization), self-play corpus (append-only JSONL of
-  `{obs, legal, policy, value}`), trainer, arena.
+- **DONE — network** (`kdagent/net.py`): a conv tower over the board planes + token/global
+  MLPs, with a spatial place head (rotation × cell), a claim pointer over line tokens, a
+  discard scalar, and a seat-relative (max-n) value head. `policy_value(enc)` returns
+  per-action logits + value (the MCTS leaf interface). Runs on CPU/CUDA and is end-to-end
+  trainable (`kdagent/test_net.py`).
+- **TODO** — MCTS (chance-node handling + determinization), self-play corpus (append-only
+  JSONL of `{obs, legal, policy, value}`), trainer, arena.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.
