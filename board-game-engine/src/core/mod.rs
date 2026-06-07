@@ -10,7 +10,7 @@ pub mod state;
 pub mod turn;
 
 pub use action::{Action, Decision};
-pub use setup::new_game;
+pub use setup::{new_game, new_game_with};
 pub use state::Variants;
 pub use state::{
     Board, Cell, GameState, Phase, Slot, CENTER, GRID, LINE, MAX_PLAYERS, NO_OWNER, STORE,

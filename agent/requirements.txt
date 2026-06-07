@@ -1,0 +1,5 @@
+# Agent Python deps (install into agent/.venv). Torch is CPU by default on Windows;
+# for CUDA, install the matching wheel from pytorch.org instead.
+maturin>=1.0,<2.0
+numpy
+torch

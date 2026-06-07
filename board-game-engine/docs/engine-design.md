@@ -401,6 +401,10 @@ same-terrain squares); still tied → **shared victory** (rulebook p.3).
    conservation (placed + discarded == 24/seat for 2p), `filled == 2×placed`, deck empty, and
    a well-formed value vector. Plus the rulebook scoring examples in `rules/score.rs` and seed
    determinism in `tests/full_game.rs`.
-6. **PyO3 bridge + agent** — mirror `agent/` from Space Base once the engine is green.
+6. **PyO3 bridge + agent** — mirror `agent/` from Space Base. **Bridge DONE (2026-06-07):**
+   `agent/engine-bridge/` exposes the Python module `kingdomino` (`Game` control API +
+   `observation()` + `domino_table()`), with `smoke_test.py` driving full games; the
+   engine↔encoder contract is `agent/docs/feature-schema.md`. **TODO:** encoder, net, MCTS
+   (chance-node handling + determinization), self-play corpus, trainer, arena.
 ```
 

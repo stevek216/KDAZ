@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# maturin / Rust build output
+target/
+*.pyd
+*.so
+
+# AlphaZero artifacts
+checkpoints/
+models/
+*.pt
+*.pth
+*.safetensors
+runs/
+logs/
+data/
+replay_buffer/
+traces/

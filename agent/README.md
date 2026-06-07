@@ -7,11 +7,20 @@ it and never reimplements a rule.
 
 ## Status
 
-Not started. The engine comes first (`../board-game-engine/docs/engine-design.md` §9).
-This layer will **mirror the Space Base agent** (`../../SpaceBase/agent/`): a PyO3
-`engine-bridge`, a token + attention encoder driven by an engine-grounded
-`docs/feature-schema.md`, a pointer-style policy + max-n vector value head, a self-play
-corpus (append-only JSONL of `{obs, legal, policy, value}`), a trainer, and an arena.
+In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
+
+- **DONE — PyO3 bridge** (`engine-bridge/`, Python module `kingdomino`): a `Game` control
+  API over the engine (`legal_actions`/`apply`/`chance_outcomes`/`apply_chance`/`clone`/
+  `terminal_value`/`observation`) plus `domino_table()`. Build with
+  `../.venv/Scripts/python -m maturin develop --release`; `smoke_test.py` drives full games.
+- **DONE — feature schema** (`docs/feature-schema.md`): the engine↔encoder contract
+  (board planes + draft tokens + global; spatial place head, claim pointer; max-n value).
+- **TODO** — encoder (NumPy/Torch), network, MCTS (with chance-node handling +
+  determinization), self-play corpus (append-only JSONL of `{obs, legal, policy, value}`),
+  trainer, arena.
+
+Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
+then `maturin develop --release` in `engine-bridge/`.
 
 Key Kingdomino-specific adaptations to design here (not in the engine):
 - **Chance-node handling under hidden info** — sampling / progressive widening of draws

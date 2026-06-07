@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "kingdomino-engine"
+version = "0.0.1"
+description = "Python bridge to the Kingdomino engine (control API + public observation + domino table)"
+requires-python = ">=3.9"
+
+[tool.maturin]
+module-name = "kingdomino"

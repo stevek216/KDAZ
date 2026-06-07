@@ -1,0 +1,29 @@
+[package]
+name = "kingdomino-engine-py"
+version = "0.0.1"
+edition = "2021"
+description = "PyO3 bridge exposing the Kingdomino engine to Python (agent training)"
+license = "MIT"
+
+[lib]
+# Python import name. Distinct from the engine lib (`kingdomino_engine`) to avoid a clash.
+name = "kingdomino"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Same rand/rand_chacha as the engine so the `Rng` types match `apply_chance`.
+rand = "0.8"
+rand_chacha = "0.3"
+serde_json = "1"
+kingdomino-engine = { path = "../../board-game-engine" }
+
+[dependencies.pyo3]
+version = "0.22"
+features = ["extension-module"]
+
+# A PyO3 extension must unwind Rust panics into Python exceptions, so keep panic=unwind
+# (the default) here — do NOT set panic="abort".
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
