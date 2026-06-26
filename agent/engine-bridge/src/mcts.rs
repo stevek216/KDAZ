@@ -248,7 +248,7 @@ fn add_dirichlet(node: &mut Node, alpha: f32, eps: f32, rng: &mut impl Rng) {
 }
 
 /// Visit-count policy over the legal actions of `gs` after `n_sims` rollout-MCTS sims.
-fn run_mcts(
+pub(crate) fn run_mcts(
     gs: &GameState,
     n_sims: u32,
     c_puct: f32,

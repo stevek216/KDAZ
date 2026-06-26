@@ -46,8 +46,13 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   `load_net`-compatible checkpoints (`.best.pt`/`.last.pt`), `--init-from` warm-start. Tested
   (`kdagent/test_train.py`: collation, a batch overfits, checkpoint round-trip). e.g.
   `python -m kdagent.train --corpus data/selfplay/rollout.jsonl --epochs 5 --device cuda`.
-- **TODO** — arena (relative strength: net vs prior / vs rollout, hero rotated through both
-  seats) and the generate→train→evaluate→promote loop. Root determinization (PIMC) later.
+- **DONE — arena** (`kdagent/arena.py`): relative strength via seat-rotated lineups, scored by
+  the engine's `terminal_value` (even = 1/players). Agents: `random`, `mcts:SIMS` (fast Rust
+  rollout via `Game.mcts_policy`), `net:CKPT` (greedy policy), `netmcts:SIMS:CKPT` (net-guided
+  MCTS). Win-rate + 95% CI + verdict. Tested (`kdagent/test_arena.py`): scores sum to 1, and
+  **mcts:64 beats random 100%**. e.g.
+  `python -m kdagent.arena --a netmcts:64:runs/net.best.pt --b mcts:64 --games 200 --device cuda`.
+- **TODO** — the closed generate→train→evaluate→promote loop. Root determinization (PIMC) later.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.

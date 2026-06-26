@@ -299,6 +299,14 @@ impl Game {
         observation_json(&self.gs).to_string()
     }
 
+    /// Greedy rollout-MCTS visit policy over the current legal actions (no exploration noise),
+    /// aligned to `legal_actions()` order — a fast Rust move for the arena. Must be called at a
+    /// player node with more than one legal action.
+    fn mcts_policy(&self, n_sims: u32, c_puct: f32, seed: u64) -> Vec<f32> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        mcts::run_mcts(&self.gs, n_sims, c_puct, 0.0, 0.0, &mut rng)
+    }
+
     /// An independent copy of the game (state + RNG), so search can branch without aliasing.
     fn clone(&self) -> Game {
         Game {
