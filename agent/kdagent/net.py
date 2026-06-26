@@ -60,6 +60,21 @@ class KingdominoNet(nn.Module):
         value_logits = self.value_head(summary)  # [pc]
         return place_map, claim_logits, discard_logit, value_logits
 
+    def forward_batch(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor):
+        """Batched heads for training. board [B, pc·C, 13, 13], lines [B, 8, F], glob [B, G]
+        -> place_map [B, 4, 13, 13], claim_logits [B, 8], discard [B], value [B, pc]."""
+        feat = self.board_conv(board)  # [B, ch, 13, 13]
+        place_map = self.place_head(feat)  # [B, 4, 13, 13]
+        board_pool = feat.mean(dim=(2, 3))  # [B, ch]
+        line_emb = self.line_mlp(lines)  # [B, 8, ch]
+        claim_logits = self.claim_head(line_emb).squeeze(-1)  # [B, 8]
+        line_pool = line_emb.mean(dim=1)  # [B, ch]
+        glob_emb = self.glob_mlp(glob)  # [B, ch]
+        summary = torch.cat([board_pool, line_pool, glob_emb], dim=-1)  # [B, 3·ch]
+        discard = self.discard_head(summary).squeeze(-1)  # [B]
+        value = self.value_head(summary)  # [B, pc]
+        return place_map, claim_logits, discard, value
+
     def policy_value(self, enc, device: str = "cpu"):
         """Per-action logits + value for one encoded state (the MCTS leaf interface)."""
         board = torch.from_numpy(enc.board).reshape(1, self.pc * N_PLANES, STORE, STORE).to(device)

@@ -39,8 +39,15 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   - `--backend python`: single-process MCTS (`rollout` or `net --ckpt`) for net-guided play.
   Same schema from both (re-encodable by the training encoder). `--no-write` = pure timing.
   e.g. `python -m kdagent.selfplay --games 64 --sims 128 --out data/selfplay/rollout.jsonl`.
-- **TODO** — trainer (learn from the corpus) and arena (relative strength). Root
-  determinization (PIMC) for competitive play layers on later.
+- **DONE — trainer** (`kdagent/train.py`, `kdagent/dataset.py`): learns from a JSONL corpus.
+  Loss = policy cross-entropy (MCTS visits vs the net's masked per-action policy) + value
+  cross-entropy (seat-relative outcome vs the max-n head). `collate` re-encodes raw records
+  and pads the variable action lists into index tensors so logits gather batch-wide; CUDA +
+  `load_net`-compatible checkpoints (`.best.pt`/`.last.pt`), `--init-from` warm-start. Tested
+  (`kdagent/test_train.py`: collation, a batch overfits, checkpoint round-trip). e.g.
+  `python -m kdagent.train --corpus data/selfplay/rollout.jsonl --epochs 5 --device cuda`.
+- **TODO** — arena (relative strength: net vs prior / vs rollout, hero rotated through both
+  seats) and the generate→train→evaluate→promote loop. Root determinization (PIMC) later.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.
