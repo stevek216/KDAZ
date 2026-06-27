@@ -209,6 +209,129 @@ def run_netbatch(args):
             print(f"    {k:>8}: {ms:6.2f} ms ({100 * v / sum(ph.values()):4.1f}%)")
 
 
+def _gpu_forward(net, batch, device, use_amp):
+    """H2D + forward + per-action gather + value softmax, all on GPU. Returns
+    `(logits, value_rel)` still *on the GPU* and un-synced — the caller forces the sync later
+    by moving them to CPU, which is what lets a CPU `collect()` run concurrently with this."""
+    import torch
+
+    board = torch.from_numpy(batch["board"]).to(device, non_blocking=True)
+    lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
+    glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+        place_map, claim_logits, discard, value = net.forward_batch(board, lines, glob)
+        logits = _gather_logits(place_map, claim_logits, discard, batch, device)
+        value_rel = torch.softmax(value.float(), dim=1)
+    return logits.float(), value_rel
+
+
+def run_netbatch_overlap(args):
+    """Pipelined net self-play: two independent game pools ping-pong so the CPU `collect()` of
+    one pool overlaps the GPU forward of the other (the phases live on independent hardware and
+    are otherwise serialized). Each pool plays half of `--games` from a distinct seed stream, so
+    the union is a deterministic, statistically-equivalent corpus. ~1.5x over `run_netbatch`."""
+    import torch
+
+    from kdagent.net import KingdominoNet, load_net
+    device = args.device
+    if args.ckpt:
+        net, _ = load_net(args.ckpt, device)
+    else:
+        net = KingdominoNet(player_count=args.players).to(device).eval()
+    use_amp = str(device).startswith("cuda")
+
+    def make_pool(total, seed):
+        return kd.BatchedNetSelfPlay(
+            n_games=args.concurrent, total_games=total, players=args.players, n_sims=args.sims,
+            c_puct=args.c_puct, temp_moves=args.temp_moves, dirichlet_alpha=args.dirichlet_alpha,
+            noise_eps=args.noise_eps, seed=seed,
+            harmony=args.harmony, middle_kingdom=args.middle_kingdom)
+
+    games_a = (args.games + 1) // 2
+    games_b = args.games // 2
+    pools = [make_pool(games_a, args.seed),
+             make_pool(games_b, args.seed ^ 0x9E37_79B9_7F4A_7C15)]
+
+    writer = None
+    if not args.no_write:
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        writer = open(args.out, "w", encoding="utf-8")
+
+    def drain(pi):
+        nonlocal total_dec
+        out = pools[pi].drain()
+        if out:
+            total_dec += len(out)
+            if writer is not None:
+                writer.write("\n".join(out) + "\n")
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    prof = args.profile
+    ph = {"gpu": 0.0, "drain": 0.0, "collect_wait": 0.0}
+    rounds = 0
+    worker = ThreadPoolExecutor(max_workers=1)
+
+    t0, total_dec, total_leaves = time.perf_counter(), 0, 0
+    last = t0
+    exhausted = [False, False]
+
+    # Prime: collect pool 0's first batch on the main thread.
+    cur = 0
+    batch = pools[cur].collect()
+    exhausted[cur] = batch["b"] == 0
+    total_leaves += batch["b"]
+
+    while True:
+        other = 1 - cur
+        rounds += 1
+        # Hand the OTHER pool's collect to the worker thread (Rust's pump/encode release the GIL),
+        # so it runs concurrently with this thread's full GPU path on `cur`.
+        fut = worker.submit(pools[other].collect)
+        ta = time.perf_counter()
+        # Main thread: H2D + forward + sync + backup for `cur`. The synchronous H2D releases the
+        # GIL, so the worker's collect genuinely overlaps it (that is the whole point).
+        if batch["b"] > 0:
+            gpu = _gpu_forward(net, batch, device, use_amp)
+            pools[cur].apply(gpu[0].cpu().numpy(), gpu[1].cpu().numpy())
+        if prof:
+            ph["gpu"] += time.perf_counter() - ta; ta = time.perf_counter()
+        drain(cur)
+        if prof:
+            ph["drain"] += time.perf_counter() - ta; ta = time.perf_counter()
+        # Join the worker (collect_wait ≈ 0 means the collect was fully hidden behind the GPU).
+        obatch = fut.result()
+        if prof:
+            ph["collect_wait"] += time.perf_counter() - ta
+        exhausted[other] = obatch["b"] == 0
+        total_leaves += obatch["b"]
+        if exhausted[0] and exhausted[1]:
+            break
+        batch, cur = obatch, other
+
+        if time.perf_counter() - last > 1.0:
+            done = sum(p.stats()[0] for p in pools)
+            el = time.perf_counter() - t0
+            print(f"  {done}/{args.games} games | {done / el:.1f} games/s | "
+                  f"{total_leaves / el:,.0f} leaf-evals/s", flush=True, end="\r")
+            last = time.perf_counter()
+
+    worker.shutdown()
+    drain(0)
+    drain(1)
+    if writer is not None:
+        writer.close()
+    el = time.perf_counter() - t0
+    print()
+    _summary(args.games, total_dec, total_leaves, el, args.out, not args.no_write)
+    print(f"  leaf-evals: {total_leaves:,} ({total_leaves / el:,.0f}/sec)")
+    if prof and rounds:
+        tot_ms = sum(ph.values()) / rounds * 1000
+        print(f"  per-round breakdown over {rounds} rounds ({tot_ms:.2f} ms/round):")
+        for k, v in ph.items():
+            print(f"    {k:>8}: {v / rounds * 1000:6.2f} ms ({100 * v / sum(ph.values()):4.1f}%)")
+
+
 def run_rust(args):
     """Pure-Rust rollout MCTS, batched across cores (no network). The whole batch runs in one
     call with the GIL released, so this is the fast path for corpus generation / perf testing."""
@@ -235,6 +358,8 @@ def main():
     ap.add_argument("--sims", type=int, default=64, help="MCTS simulations per move")
     ap.add_argument("--concurrent", type=int, default=1024, help="netbatch: games in flight (batch)")
     ap.add_argument("--profile", action="store_true", help="netbatch: per-round phase timing breakdown")
+    ap.add_argument("--overlap", action="store_true",
+                    help="netbatch: two-pool pipeline (CPU collect overlaps GPU forward)")
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--evaluator", choices=["rollout", "net"], default="rollout",
                     help="python backend only; rust is always rollout")
@@ -257,7 +382,10 @@ def main():
     if args.backend == "rust":
         run_rust(args)
     elif args.backend == "netbatch":
-        run_netbatch(args)
+        if args.overlap:
+            run_netbatch_overlap(args)
+        else:
+            run_netbatch(args)
     else:
         run_python(args)
 
