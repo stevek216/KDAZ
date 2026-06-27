@@ -152,21 +152,38 @@ def run_netbatch(args):
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         writer = open(args.out, "w", encoding="utf-8")
 
+    prof = args.profile
+    cuda = str(device).startswith("cuda")
+    sync = (lambda: torch.cuda.synchronize()) if (prof and cuda) else (lambda: None)
+    ph = {"collect": 0.0, "to_dev": 0.0, "forward": 0.0, "apply": 0.0}
+    rounds = 0
+
     t0, total_dec, total_leaves = time.perf_counter(), 0, 0
     last = t0
     while not pool.done():
+        sync(); ta = time.perf_counter()
         batch = pool.collect()
         b = batch["b"]
+        if prof:
+            ph["collect"] += time.perf_counter() - ta
         if b > 0:
             total_leaves += b
+            rounds += 1
+            sync(); ta = time.perf_counter()
             board = torch.from_numpy(batch["board"]).to(device, non_blocking=True)
             lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
             glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
+            if prof:
+                sync(); ph["to_dev"] += time.perf_counter() - ta; ta = time.perf_counter()
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 place_map, claim_logits, discard, value = net.forward_batch(board, lines, glob)
                 logits = _gather_logits(place_map, claim_logits, discard, batch, device)
                 value_rel = torch.softmax(value.float(), dim=1)
+            if prof:
+                sync(); ph["forward"] += time.perf_counter() - ta; ta = time.perf_counter()
             pool.apply(logits.float().cpu().numpy(), value_rel.cpu().numpy())
+            if prof:
+                ph["apply"] += time.perf_counter() - ta
         out_lines = pool.drain()
         if out_lines:
             total_dec += len(out_lines)
@@ -184,6 +201,12 @@ def run_netbatch(args):
     print()
     _summary(args.games, total_dec, total_leaves, el, args.out, not args.no_write)
     print(f"  leaf-evals: {total_leaves:,} ({total_leaves / el:,.0f}/sec)")
+    if prof and rounds:
+        tot_ms = sum(ph.values()) / rounds * 1000
+        print(f"  per-round breakdown over {rounds} rounds ({tot_ms:.2f} ms/round):")
+        for k, v in ph.items():
+            ms = v / rounds * 1000
+            print(f"    {k:>8}: {ms:6.2f} ms ({100 * v / sum(ph.values()):4.1f}%)")
 
 
 def run_rust(args):
@@ -211,6 +234,7 @@ def main():
     ap.add_argument("--games", type=int, default=10)
     ap.add_argument("--sims", type=int, default=64, help="MCTS simulations per move")
     ap.add_argument("--concurrent", type=int, default=1024, help="netbatch: games in flight (batch)")
+    ap.add_argument("--profile", action="store_true", help="netbatch: per-round phase timing breakdown")
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--evaluator", choices=["rollout", "net"], default="rollout",
                     help="python backend only; rust is always rollout")
