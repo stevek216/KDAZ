@@ -13,6 +13,13 @@ path = "src/main.rs"
 # libtorch bindings — reuses the libtorch shipped with the pip `torch` (LIBTORCH_USE_PYTORCH=1),
 # so no separate CUDA toolkit is needed (the cu126 runtime comes from torch).
 tch = "0.19"
+kingdomino-engine = { path = "../../board-game-engine" }
+kingdomino-features = { path = "../kd-features" }  # shared feature encoder + corpus JSON
+rand = "0.8"
+rand_chacha = "0.3"
+rand_distr = "0.4"
+rayon = "1"
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 # Force-load torch_cuda.dll at startup so its static initializers register the CUDA backend

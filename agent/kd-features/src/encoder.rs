@@ -1,8 +1,6 @@
-//! Rust port of the Python feature encoder (`kdagent/encoder.py`), operating directly on a
-//! `GameState` — no JSON, no per-cell Python loops. This is the hot path for batched net
-//! self-play: each leaf is encoded straight into a shared tensor buffer. Kept bit-for-bit
-//! compatible with the Python encoder (a parity test guards it), so a net trained on the
-//! Python path runs unchanged here.
+//! The canonical feature encoder — `GameState` → network input tensors. A faithful port of
+//! the Python `kdagent/encoder.py` (bit-for-bit; the bridge's parity test guards it), kept
+//! here so the bridge and the fully-Rust self-play binary share ONE encoder.
 //!
 //! Layout (per state): board `[pc·N_PLANES, 13, 13]`, lines `[8, LINE_FEATS]`, glob `[GLOB]`,
 //! seat-relative (self first). See `agent/docs/feature-schema.md`.

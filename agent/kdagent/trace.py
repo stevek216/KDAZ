@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--out", default="runs/traced.ts.pt")
     ap.add_argument("--sample-dir", default="runs/parity", help="where to write parity .npy")
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--bf16", action="store_true", help="trace a bf16 model (for fast inference)")
     args = ap.parse_args()
 
     if args.ckpt:
@@ -51,6 +52,9 @@ def main():
     board = torch.rand(b, pc * N_PLANES, 13, 13)
     lines = torch.rand(b, 8, LINE_FEATS)
     glob = torch.rand(b, global_dim(pc))
+    if args.bf16:
+        wrap = wrap.to(torch.bfloat16)
+        board, lines, glob = (x.to(torch.bfloat16) for x in (board, lines, glob))
 
     with torch.no_grad():
         traced = torch.jit.trace(wrap, (board, lines, glob))
@@ -61,8 +65,8 @@ def main():
     os.makedirs(args.sample_dir, exist_ok=True)
     for name, t in [("board", board), ("lines", lines), ("glob", glob),
                     ("place_map", pm), ("claim_logits", cl), ("discard", dc), ("value", v)]:
-        np.save(os.path.join(args.sample_dir, f"{name}.npy"), t.detach().numpy())
-    print(f"traced -> {args.out}  |  parity sample (B={b}) -> {args.sample_dir}")
+        np.save(os.path.join(args.sample_dir, f"{name}.npy"), t.float().detach().numpy())
+    print(f"traced -> {args.out}{' (bf16)' if args.bf16 else ''}  |  parity sample (B={b}) -> {args.sample_dir}")
 
 
 if __name__ == "__main__":

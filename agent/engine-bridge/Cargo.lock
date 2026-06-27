@@ -90,12 +90,21 @@ name = "kingdomino-engine-py"
 version = "0.0.1"
 dependencies = [
  "kingdomino-engine",
+ "kingdomino-features",
  "numpy",
  "pyo3",
  "rand",
  "rand_chacha",
  "rand_distr",
  "rayon",
+ "serde_json",
+]
+
+[[package]]
+name = "kingdomino-features"
+version = "0.0.1"
+dependencies = [
+ "kingdomino-engine",
  "serde_json",
 ]
 

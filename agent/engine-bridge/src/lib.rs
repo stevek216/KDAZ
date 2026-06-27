@@ -33,8 +33,9 @@ use kingdomino_engine::core::{
 use kingdomino_engine::rules::{cell_of, score_board};
 
 mod batch_selfplay;
-mod encoder;
 mod mcts;
+
+use kingdomino_features::encoder; // single-sourced feature encoder (parity-tested)
 
 fn phase_str(p: Phase) -> &'static str {
     match p {
