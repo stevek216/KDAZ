@@ -170,7 +170,7 @@ def run_netbatch(args):
             total_leaves += b
             rounds += 1
             sync(); ta = time.perf_counter()
-            board = torch.from_numpy(batch["board"]).to(device, non_blocking=True)
+            board = torch.from_numpy(batch["board"]).to(device, non_blocking=True).float()
             lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
             glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
             if prof:
@@ -215,7 +215,7 @@ def _gpu_forward(net, batch, device, use_amp):
     by moving them to CPU, which is what lets a CPU `collect()` run concurrently with this."""
     import torch
 
-    board = torch.from_numpy(batch["board"]).to(device, non_blocking=True)
+    board = torch.from_numpy(batch["board"]).to(device, non_blocking=True).float()
     lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
     glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):

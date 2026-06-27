@@ -40,10 +40,16 @@ fn phase_idx(p: Phase) -> Option<usize> {
 
 /// Encode one state into the (pre-zeroed) `board` / `lines` / `glob` slices.
 pub fn encode_into(gs: &GameState, board: &mut [f32], lines: &mut [f32], glob: &mut [f32]) {
+    encode_board(gs, board, 1.0f32);
+    encode_aux(gs, lines, glob);
+}
+
+/// The board planes (seat-relative), into a pre-zeroed slice. Generic over the element type so
+/// callers can encode `f32` (training) or `u8` (compact host→device transfer) from ONE source —
+/// every written value is the indicator `one`, since the board is a pure binary tensor.
+pub fn encode_board<T: Copy>(gs: &GameState, board: &mut [T], one: T) {
     let pc = gs.player_count as usize;
     let to_act = gs.to_act as usize;
-
-    // ---- board planes, seat-relative ----
     for si in 0..pc {
         let b = &gs.boards[(to_act + si) % pc];
         let base = si * N_PLANES * STORE * STORE;
@@ -54,21 +60,27 @@ pub fn encode_into(gs: &GameState, board: &mut [f32], lines: &mut [f32], glob: &
             for c in 0..STORE {
                 let cell = b.cell(r as u8, c as u8);
                 if cell.is_castle() {
-                    board[at(P_CASTLE, r, c)] = 1.0;
+                    board[at(P_CASTLE, r, c)] = one;
                 } else if let Some(t) = cell.terrain_of() {
-                    board[at(t.index() as usize, r, c)] = 1.0;
-                    board[at(N_TERRAIN + cell.crowns() as usize, r, c)] = 1.0;
+                    board[at(t.index() as usize, r, c)] = one;
+                    board[at(N_TERRAIN + cell.crowns() as usize, r, c)] = one;
                 } else {
-                    board[at(P_EMPTY, r, c)] = 1.0;
+                    board[at(P_EMPTY, r, c)] = one;
                 }
                 let span_r = mxr.max(r) - mnr.min(r);
                 let span_c = mxc.max(c) - mnc.min(c);
                 if span_r < GRID && span_c < GRID {
-                    board[at(P_REACH, r, c)] = 1.0;
+                    board[at(P_REACH, r, c)] = one;
                 }
             }
         }
     }
+}
+
+/// The draft-line tokens + global vector (both carry fractional features, so always `f32`).
+pub fn encode_aux(gs: &GameState, lines: &mut [f32], glob: &mut [f32]) {
+    let pc = gs.player_count as usize;
+    let to_act = gs.to_act as usize;
 
     // ---- draft-line tokens (current_line 0..3, then next_line 4..7) ----
     encode_line(gs, &gs.current_line, true, lines);

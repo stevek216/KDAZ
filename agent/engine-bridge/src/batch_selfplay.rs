@@ -649,10 +649,12 @@ impl BatchedNetSelfPlay {
             }
         }
 
-        // Encode the leaf states into the batch buffers (rayon-parallel, GIL released).
+        // Encode the leaf states into the batch buffers (rayon-parallel, GIL released). The board
+        // is a binary tensor, so it ships as u8 (4x less host→device traffic) and is cast to
+        // float on the GPU; lines/glob carry fractional features and stay f32.
         let per_board = encoder::board_per_state(pc);
         let glen = encoder::glob_len(pc);
-        let mut board = vec![0f32; b * per_board];
+        let mut board = vec![0u8; b * per_board];
         let mut lines = vec![0f32; b * encoder::LINES_LEN];
         let mut glob = vec![0f32; b * glen];
         py.allow_threads(|| {
@@ -661,7 +663,10 @@ impl BatchedNetSelfPlay {
                 .zip(lines.par_chunks_mut(encoder::LINES_LEN))
                 .zip(glob.par_chunks_mut(glen.max(1)))
                 .zip(states.par_iter())
-                .for_each(|(((bc, lc), gc), gs)| encoder::encode_into(gs, bc, lc, gc));
+                .for_each(|(((bc, lc), gc), gs)| {
+                    encoder::encode_board(gs, bc, 1u8);
+                    encoder::encode_aux(gs, lc, gc);
+                });
         });
 
         let d = PyDict::new_bound(py);
