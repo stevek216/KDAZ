@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kingdomino — Mighty Duel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">King<span>domino</span> <em>Mighty Duel</em></div>
+    <div id="status" class="status">Loading…</div>
+    <div class="controls">
+      <label>You play
+        <select id="seat"><option value="0">first castle</option><option value="1">second castle</option></select>
+      </label>
+      <label class="chk"><input type="checkbox" id="harmony" checked> Harmony</label>
+      <label class="chk"><input type="checkbox" id="middle" checked> Middle Kingdom</label>
+      <button id="newgame">New game</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="draft" class="panel">
+      <h2>Draft</h2>
+      <div class="draft-row"><span class="draft-label">Place from</span><div id="current-line" class="line"></div></div>
+      <div class="draft-row"><span class="draft-label">Claim next</span><div id="next-line" class="line"></div></div>
+      <div id="hand" class="hand hidden">
+        <span class="hand-label">Your tile:</span>
+        <div id="hand-domino" class="hand-domino"></div>
+        <button id="rotate">⟳ Rotate (R)</button>
+        <button id="discard" class="discard hidden">Discard (no spot)</button>
+      </div>
+    </section>
+
+    <section class="boards">
+      <div class="kingdom-wrap">
+        <div class="kingdom-head"><span class="who you">You</span><span id="score-you" class="score">0</span></div>
+        <div id="board-you" class="kingdom interactive"></div>
+        <div id="breakdown-you" class="breakdown"></div>
+      </div>
+      <div class="kingdom-wrap">
+        <div class="kingdom-head"><span id="opp-name" class="who opp">Opponent</span><span id="score-opp" class="score">0</span></div>
+        <div id="board-opp" class="kingdom small"></div>
+        <div id="breakdown-opp" class="breakdown"></div>
+      </div>
+    </section>
+
+    <aside id="log" class="panel"><h2>Log</h2><div id="log-entries"></div></aside>
+  </main>
+
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2 id="overlay-title">Game over</h2>
+      <div id="overlay-body"></div>
+      <button id="overlay-new">New game</button>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
