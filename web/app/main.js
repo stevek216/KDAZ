@@ -130,8 +130,6 @@ function drawLine(elId, line, isClaimLine) {
     d.className = "slot"; d.style.width = W + "px"; d.style.height = H + "px";
     if (slot.domino == null) { d.classList.add("empty"); el.appendChild(d); continue; }
     applyDomino(d, slot.number, H);
-    const num = document.createElement("div"); num.className = "num"; num.textContent = slot.number;
-    d.appendChild(num);
     if (slot.owner != null) {
       const k = document.createElement("div"); k.className = "king";
       k.style.background = slot.owner === S.human_seat ? "var(--you)" : "var(--opp)";
@@ -160,6 +158,15 @@ function renderBoard(elId, seat, small, interactive) {
     const [dr, dc] = DIRS[lastPlace.rot];
     flash.add(`${lastPlace.row + dr},${lastPlace.col + dc}`);
   }
+  // cells covered by ANY legal placement at the current rotation (both squares, not just anchor)
+  const footprint = new Set();
+  if (interactive) {
+    const [dr, dc] = DIRS[rot];
+    for (const key of placeByRot[rot]) {
+      const [r, c] = key.split("_").map(Number);
+      footprint.add(`${r}_${c}`); footprint.add(`${r + dr}_${c + dc}`);
+    }
+  }
   const map = {};
   for (let r = 0; r < STORE; r++) for (let c = 0; c < STORE; c++) {
     const cell = document.createElement("div");
@@ -177,10 +184,10 @@ function renderBoard(elId, seat, small, interactive) {
       }
     } else {
       cell.classList.add("empty");
-      if (interactive && placeByRot[rot].has(`${r}_${c}`)) {
+      if (interactive && footprint.has(`${r}_${c}`)) {
         cell.classList.add("legal");
-        cell.onclick = () => tryPlace(r, c);
-        cell.onmouseenter = () => showGhost(r, c);
+        cell.onclick = () => clickPlace(r, c);
+        cell.onmouseenter = () => hoverPlace(r, c);
         cell.onmouseleave = clearGhost;
       }
     }
@@ -209,14 +216,24 @@ function renderHand() {
 }
 
 // ---- placement helpers ----
-function tryPlace(r, c) {
-  const idx = legalPlace[`${r}_${c}_${rot}`];
-  if (idx !== undefined) { addLog(`You placed domino ${S.current_domino.number}`, "you"); move(idx); }
+// A footprint cell is either a placement's anchor or its partner; resolve to the placement
+// (preferring an anchor interpretation), so hovering/clicking any covered cell works.
+function resolvePlacement(r, c) {
+  const a = legalPlace[`${r}_${c}_${rot}`];
+  if (a !== undefined) return { index: a, ar: r, ac: c };
+  const [dr, dc] = DIRS[rot], ar = r - dr, ac = c - dc;
+  const p = legalPlace[`${ar}_${ac}_${rot}`];
+  if (p !== undefined) return { index: p, ar, ac };
+  return null;
 }
-function showGhost(r, c) {
-  if (!placeByRot[rot].has(`${r}_${c}`)) return;
+function hoverPlace(r, c) { const p = resolvePlacement(r, c); if (p) showGhostAt(p.ar, p.ac); }
+function clickPlace(r, c) {
+  const p = resolvePlacement(r, c);
+  if (p) { addLog(`You placed domino ${S.current_domino.number}`, "you"); move(p.index); }
+}
+function showGhostAt(ar, ac) {
   const [dr, dc] = DIRS[rot];
-  ghostCells = [[r, c, S.current_domino.a], [r + dr, c + dc, S.current_domino.b]];
+  ghostCells = [[ar, ac, S.current_domino.a], [ar + dr, ac + dc, S.current_domino.b]];
   for (const [rr, cc, sq] of ghostCells) {
     const el = youCells[`${rr},${cc}`];
     if (el) { applySquare(el, sq.terrain, sq.crowns, cellPx(false)); el.classList.add("ghost"); el.classList.remove("empty"); }
