@@ -141,6 +141,8 @@ def run_netbatch(args):
     else:
         net = KingdominoNet(player_count=args.players).to(device).eval()
     use_amp = str(device).startswith("cuda")
+    if use_amp:  # channels_last speeds the small-conv forward at large batch (~27% @2048)
+        net = net.to(memory_format=torch.channels_last)
 
     pool = kd.BatchedNetSelfPlay(
         n_games=args.concurrent, total_games=args.games, players=args.players, n_sims=args.sims,
@@ -171,6 +173,8 @@ def run_netbatch(args):
             rounds += 1
             sync(); ta = time.perf_counter()
             board = torch.from_numpy(batch["board"]).to(device, non_blocking=True).float()
+            if use_amp:  # match the channels_last net
+                board = board.to(memory_format=torch.channels_last)
             lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
             glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
             if prof:
@@ -216,6 +220,8 @@ def _gpu_forward(net, batch, device, use_amp):
     import torch
 
     board = torch.from_numpy(batch["board"]).to(device, non_blocking=True).float()
+    if use_amp:  # match the channels_last net (set in the caller)
+        board = board.to(memory_format=torch.channels_last)
     lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
     glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
@@ -239,6 +245,8 @@ def run_netbatch_overlap(args):
     else:
         net = KingdominoNet(player_count=args.players).to(device).eval()
     use_amp = str(device).startswith("cuda")
+    if use_amp:  # channels_last speeds the small-conv forward at large batch (~27% @2048)
+        net = net.to(memory_format=torch.channels_last)
 
     def make_pool(total, seed):
         return kd.BatchedNetSelfPlay(
