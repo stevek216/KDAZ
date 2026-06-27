@@ -1,0 +1,25 @@
+[package]
+name = "kingdomino-selfplay"
+version = "0.0.1"
+edition = "2021"
+description = "Fully-Rust net self-play for Kingdomino (libtorch inference via tch, no Python in the hot loop)"
+license = "MIT"
+
+[[bin]]
+name = "kd-selfplay"
+path = "src/main.rs"
+
+[dependencies]
+# libtorch bindings — reuses the libtorch shipped with the pip `torch` (LIBTORCH_USE_PYTORCH=1),
+# so no separate CUDA toolkit is needed (the cu126 runtime comes from torch).
+tch = "0.19"
+
+[target.'cfg(windows)'.dependencies]
+# Force-load torch_cuda.dll at startup so its static initializers register the CUDA backend
+# (Windows never loads it otherwise — CUDA ops dispatch dynamically, so nothing links it).
+libloading = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
