@@ -16,10 +16,13 @@
 
 #![allow(clippy::useless_conversion)] // PyO3 codegen on fallible methods (known false positive)
 
+use numpy::ndarray::{Array2, Array3, Array4};
+use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 use serde_json::{json, Value};
 
 use kingdomino_engine::components::{domino, Square, DOMINOES};
@@ -29,6 +32,7 @@ use kingdomino_engine::core::{
 };
 use kingdomino_engine::rules::{cell_of, score_board};
 
+mod encoder;
 mod mcts;
 
 fn phase_str(p: Phase) -> &'static str {
@@ -317,6 +321,50 @@ impl Game {
     }
 }
 
+/// Batch-encode the current states of `games` into network input tensors, in Rust (rayon-
+/// parallel, GIL released). Returns `(board [B, pc·N_PLANES, 13, 13], lines [B, 8, LINE_FEATS],
+/// glob [B, GLOB])` — zero-copy numpy, identical to the Python `kdagent.encoder` output.
+#[pyfunction]
+#[allow(clippy::type_complexity)] // the three named numpy return arrays are the API
+fn encode_batch<'py>(
+    py: Python<'py>,
+    games: Vec<Py<Game>>,
+) -> PyResult<(
+    Bound<'py, PyArray4<f32>>,
+    Bound<'py, PyArray3<f32>>,
+    Bound<'py, PyArray2<f32>>,
+)> {
+    let states: Vec<GameState> = games.iter().map(|g| g.borrow(py).gs).collect();
+    let b = states.len();
+    let pc = states.first().map_or(2, |s| s.player_count as usize);
+    let per_board = encoder::board_per_state(pc);
+    let glen = encoder::glob_len(pc);
+    let mut board = vec![0f32; b * per_board];
+    let mut lines = vec![0f32; b * encoder::LINES_LEN];
+    let mut glob = vec![0f32; b * glen];
+    py.allow_threads(|| {
+        board
+            .par_chunks_mut(per_board.max(1))
+            .zip(lines.par_chunks_mut(encoder::LINES_LEN))
+            .zip(glob.par_chunks_mut(glen.max(1)))
+            .zip(states.par_iter())
+            .for_each(|(((bc, lc), gc), gs)| encoder::encode_into(gs, bc, lc, gc));
+    });
+    let board = Array4::from_shape_vec(
+        (b, pc * encoder::N_PLANES, encoder::STORE, encoder::STORE),
+        board,
+    )
+    .unwrap()
+    .into_pyarray_bound(py);
+    let lines = Array3::from_shape_vec((b, 8, encoder::LINE_FEATS), lines)
+        .unwrap()
+        .into_pyarray_bound(py);
+    let glob = Array2::from_shape_vec((b, glen), glob)
+        .unwrap()
+        .into_pyarray_bound(py);
+    Ok((board, lines, glob))
+}
+
 /// JSON of the static 48-domino table: `[{number, a:{terrain,crowns}, b:{...}}, ...]`.
 #[pyfunction]
 fn domino_table() -> String {
@@ -331,6 +379,7 @@ fn domino_table() -> String {
 fn kingdomino(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Game>()?;
     m.add_function(wrap_pyfunction!(domino_table, m)?)?;
+    m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(mcts::selfplay_batch, m)?)?;
     Ok(())
 }
