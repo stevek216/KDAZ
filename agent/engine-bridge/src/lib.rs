@@ -32,6 +32,7 @@ use kingdomino_engine::core::{
 };
 use kingdomino_engine::rules::{cell_of, score_board};
 
+mod batch_selfplay;
 mod encoder;
 mod mcts;
 
@@ -378,6 +379,7 @@ fn domino_table() -> String {
 #[pymodule]
 fn kingdomino(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Game>()?;
+    m.add_class::<batch_selfplay::BatchedNetSelfPlay>()?;
     m.add_function(wrap_pyfunction!(domino_table, m)?)?;
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(mcts::selfplay_batch, m)?)?;

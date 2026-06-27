@@ -111,6 +111,81 @@ def run_python(args):
     _summary(args.games, total, total * args.sims, elapsed, args.out, not args.no_write)
 
 
+def _gather_logits(place_map, claim_logits, discard, batch, device):
+    """Per-action logits [B, Amax] from the net heads + the pool's action descriptors
+    (mirrors kdagent.dataset.gather_logits / net.policy_value)."""
+    import torch
+
+    from kdagent.encoder import A_CLAIM, A_PLACE
+    b = place_map.size(0)
+    a_type = torch.from_numpy(batch["a_type"]).to(device)
+    a_pidx = torch.from_numpy(batch["a_pidx"]).to(device).clamp(min=0)
+    a_ltok = torch.from_numpy(batch["a_ltok"]).to(device).clamp(min=0)
+    a_mask = torch.from_numpy(batch["a_mask"]).to(device).bool()
+    pl = torch.gather(place_map.reshape(b, -1), 1, a_pidx)
+    cl = torch.gather(claim_logits, 1, a_ltok)
+    ds = discard.unsqueeze(1).expand(-1, a_type.size(1))
+    logits = torch.where(a_type == A_PLACE, pl, torch.where(a_type == A_CLAIM, cl, ds))
+    return logits.masked_fill(~a_mask, float("-inf"))
+
+
+def run_netbatch(args):
+    """Batched net self-play: a Rust pool of games (encoding + trees), one bf16 GPU forward
+    per round. Net from --ckpt, or a fresh (random) net for perf measurement."""
+    import torch
+
+    from kdagent.net import KingdominoNet, load_net
+    device = args.device
+    if args.ckpt:
+        net, _ = load_net(args.ckpt, device)
+    else:
+        net = KingdominoNet(player_count=args.players).to(device).eval()
+    use_amp = str(device).startswith("cuda")
+
+    pool = kd.BatchedNetSelfPlay(
+        n_games=args.concurrent, total_games=args.games, players=args.players, n_sims=args.sims,
+        c_puct=args.c_puct, temp_moves=args.temp_moves, dirichlet_alpha=args.dirichlet_alpha,
+        noise_eps=args.noise_eps, seed=args.seed,
+        harmony=args.harmony, middle_kingdom=args.middle_kingdom)
+    writer = None
+    if not args.no_write:
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        writer = open(args.out, "w", encoding="utf-8")
+
+    t0, total_dec, total_leaves = time.perf_counter(), 0, 0
+    last = t0
+    while not pool.done():
+        batch = pool.collect()
+        b = batch["b"]
+        if b > 0:
+            total_leaves += b
+            board = torch.from_numpy(batch["board"]).to(device, non_blocking=True)
+            lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
+            glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                place_map, claim_logits, discard, value = net.forward_batch(board, lines, glob)
+                logits = _gather_logits(place_map, claim_logits, discard, batch, device)
+                value_rel = torch.softmax(value.float(), dim=1)
+            pool.apply(logits.float().cpu().numpy(), value_rel.cpu().numpy())
+        out_lines = pool.drain()
+        if out_lines:
+            total_dec += len(out_lines)
+            if writer is not None:
+                writer.write("\n".join(out_lines) + "\n")
+        if time.perf_counter() - last > 1.0:
+            done, tot = pool.stats()
+            el = time.perf_counter() - t0
+            print(f"  {done}/{tot} games | {done / el:.1f} games/s | "
+                  f"{total_leaves / el:,.0f} leaf-evals/s", flush=True, end="\r")
+            last = time.perf_counter()
+    if writer is not None:
+        writer.close()
+    el = time.perf_counter() - t0
+    print()
+    _summary(args.games, total_dec, total_leaves, el, args.out, not args.no_write)
+    print(f"  leaf-evals: {total_leaves:,} ({total_leaves / el:,.0f}/sec)")
+
+
 def run_rust(args):
     """Pure-Rust rollout MCTS, batched across cores (no network). The whole batch runs in one
     call with the GIL released, so this is the fast path for corpus generation / perf testing."""
@@ -130,10 +205,12 @@ def run_rust(args):
 
 def main():
     ap = argparse.ArgumentParser(description="Generate a Kingdomino self-play corpus.")
-    ap.add_argument("--backend", choices=["python", "rust"], default="rust",
-                    help="rust = batched pure-Rust rollout MCTS (fast); python = single-process")
+    ap.add_argument("--backend", choices=["python", "rust", "netbatch"], default="rust",
+                    help="rust = batched rollout MCTS; netbatch = batched net self-play "
+                         "(Rust pool + one GPU forward/round); python = single-process")
     ap.add_argument("--games", type=int, default=10)
     ap.add_argument("--sims", type=int, default=64, help="MCTS simulations per move")
+    ap.add_argument("--concurrent", type=int, default=1024, help="netbatch: games in flight (batch)")
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--evaluator", choices=["rollout", "net"], default="rollout",
                     help="python backend only; rust is always rollout")
@@ -155,6 +232,8 @@ def main():
 
     if args.backend == "rust":
         run_rust(args)
+    elif args.backend == "netbatch":
+        run_netbatch(args)
     else:
         run_python(args)
 
