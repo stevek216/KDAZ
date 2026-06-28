@@ -213,22 +213,43 @@ def run_netbatch(args):
             print(f"    {k:>8}: {ms:6.2f} ms ({100 * v / sum(ph.values()):4.1f}%)")
 
 
-def _gpu_forward(net, batch, device, use_amp):
+def _gpu_forward(net, batch, device, use_amp, prof=None):
     """H2D + forward + per-action gather + value softmax, all on GPU. Returns
     `(logits, value_rel)` still *on the GPU* and un-synced — the caller forces the sync later
-    by moving them to CPU, which is what lets a CPU `collect()` run concurrently with this."""
+    by moving them to CPU, which is what lets a CPU `collect()` run concurrently with this.
+
+    `prof`: optional dict; when given, accumulates 'h2d' and 'forward' ms with cuda syncs
+    (so the async GPU ops are attributed to the right phase — only for the --profile path)."""
     import torch
 
+    sync = torch.cuda.synchronize if prof is not None else (lambda: None)
+    ta = time.perf_counter()
     board = torch.from_numpy(batch["board"]).to(device, non_blocking=True).float()
     if use_amp:  # match the channels_last net (set in the caller)
         board = board.to(memory_format=torch.channels_last)
     lines = torch.from_numpy(batch["lines"]).to(device, non_blocking=True)
     glob = torch.from_numpy(batch["glob"]).to(device, non_blocking=True)
+    if prof is not None:
+        sync(); prof["h2d"] += time.perf_counter() - ta; ta = time.perf_counter()
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
         place_map, claim_logits, discard, value = net.forward_batch(board, lines, glob)
+        if prof is not None:
+            sync(); prof["forward"] += time.perf_counter() - ta; ta = time.perf_counter()
+        # _gather_logits also transfers the action descriptors (a_type/pidx/ltok/mask) H2D, so
+        # this phase = descriptor transfer + gather + value softmax (the descriptor-slim target).
         logits = _gather_logits(place_map, claim_logits, discard, batch, device)
         value_rel = torch.softmax(value.float(), dim=1)
+    if prof is not None:
+        sync(); prof["gather"] += time.perf_counter() - ta
     return logits.float(), value_rel
+
+
+def _timed_collect(pool):
+    """Run a pool's collect, returning (batch, wall_seconds) so the overlap loop can see the
+    collect's actual duration (how close it is to surfacing from behind the GPU path)."""
+    t = time.perf_counter()
+    b = pool.collect()
+    return b, time.perf_counter() - t
 
 
 def run_netbatch_overlap(args):
@@ -276,7 +297,12 @@ def run_netbatch_overlap(args):
     from concurrent.futures import ThreadPoolExecutor
 
     prof = args.profile
-    ph = {"gpu": 0.0, "drain": 0.0, "collect_wait": 0.0}
+    # h2d/forward: GPU-span split (cuda-synced). d2h/backup: the apply, split into the device->host
+    # copy vs the Rust tree backup. collect_actual: the worker collect's own duration (vs the GPU
+    # span — how close it is to surfacing). collect_wait: main-thread stall on the worker (≈0 = hidden).
+    ph = {"h2d": 0.0, "forward": 0.0, "gather": 0.0, "d2h": 0.0, "backup": 0.0,
+          "drain": 0.0, "collect_wait": 0.0, "collect_actual": 0.0}
+    fph = ph if prof else None
     rounds = 0
     worker = ThreadPoolExecutor(max_workers=1)
 
@@ -295,22 +321,27 @@ def run_netbatch_overlap(args):
         rounds += 1
         # Hand the OTHER pool's collect to the worker thread (Rust's pump/encode release the GIL),
         # so it runs concurrently with this thread's full GPU path on `cur`.
-        fut = worker.submit(pools[other].collect)
-        ta = time.perf_counter()
+        fut = worker.submit(_timed_collect, pools[other])
         # Main thread: H2D + forward + sync + backup for `cur`. The synchronous H2D releases the
         # GIL, so the worker's collect genuinely overlaps it (that is the whole point).
         if batch["b"] > 0:
-            gpu = _gpu_forward(net, batch, device, use_amp)
-            pools[cur].apply(gpu[0].cpu().numpy(), gpu[1].cpu().numpy())
-        if prof:
-            ph["gpu"] += time.perf_counter() - ta; ta = time.perf_counter()
+            gpu = _gpu_forward(net, batch, device, use_amp, prof=fph)
+            ta = time.perf_counter()
+            logits_np, value_np = gpu[0].cpu().numpy(), gpu[1].cpu().numpy()
+            if prof:
+                ph["d2h"] += time.perf_counter() - ta; ta = time.perf_counter()
+            pools[cur].apply(logits_np, value_np)
+            if prof:
+                ph["backup"] += time.perf_counter() - ta
+        ta = time.perf_counter()
         drain(cur)
         if prof:
             ph["drain"] += time.perf_counter() - ta; ta = time.perf_counter()
         # Join the worker (collect_wait ≈ 0 means the collect was fully hidden behind the GPU).
-        obatch = fut.result()
+        obatch, cdur = fut.result()
         if prof:
             ph["collect_wait"] += time.perf_counter() - ta
+            ph["collect_actual"] += cdur
         exhausted[other] = obatch["b"] == 0
         total_leaves += obatch["b"]
         if exhausted[0] and exhausted[1]:
@@ -334,10 +365,18 @@ def run_netbatch_overlap(args):
     _summary(args.games, total_dec, total_leaves, el, args.out, not args.no_write)
     print(f"  leaf-evals: {total_leaves:,} ({total_leaves / el:,.0f}/sec)")
     if prof and rounds:
-        tot_ms = sum(ph.values()) / rounds * 1000
-        print(f"  per-round breakdown over {rounds} rounds ({tot_ms:.2f} ms/round):")
-        for k, v in ph.items():
-            print(f"    {k:>8}: {v / rounds * 1000:6.2f} ms ({100 * v / sum(ph.values()):4.1f}%)")
+        # The round = the sequential main-thread phases; collect_actual runs in PARALLEL on the
+        # worker (shown separately, not summed). collect_wait ≈ 0 ⇒ collect hidden behind the GPU.
+        main_keys = ["h2d", "forward", "gather", "d2h", "backup", "drain", "collect_wait"]
+        round_ms = sum(ph[k] for k in main_keys) / rounds * 1000
+        print(f"  per-round MAIN-THREAD breakdown over {rounds} rounds ({round_ms:.2f} ms/round):")
+        for k in main_keys:
+            ms = ph[k] / rounds * 1000
+            print(f"    {k:>12}: {ms:6.2f} ms ({100 * ms / round_ms:4.1f}%)")
+        cactual = ph["collect_actual"] / rounds * 1000
+        gpu_ms = sum(ph[k] for k in ("h2d", "forward", "gather", "d2h", "backup")) / rounds * 1000
+        print(f"    {'collect||':>12}: {cactual:6.2f} ms  (worker, overlaps the {gpu_ms:.2f} ms GPU span; "
+              f"margin {gpu_ms - cactual:+.2f} ms)")
 
 
 def run_rust(args):
