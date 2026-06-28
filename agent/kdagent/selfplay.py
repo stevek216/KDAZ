@@ -118,9 +118,10 @@ def _gather_logits(place_map, claim_logits, discard, batch, device):
 
     from kdagent.encoder import A_CLAIM, A_PLACE
     b = place_map.size(0)
+    # Descriptors arrive narrow (int8/int16); gather needs int64 indices, so cast on-GPU.
     a_type = torch.from_numpy(batch["a_type"]).to(device)
-    a_pidx = torch.from_numpy(batch["a_pidx"]).to(device).clamp(min=0)
-    a_ltok = torch.from_numpy(batch["a_ltok"]).to(device).clamp(min=0)
+    a_pidx = torch.from_numpy(batch["a_pidx"]).to(device).long().clamp(min=0)
+    a_ltok = torch.from_numpy(batch["a_ltok"]).to(device).long().clamp(min=0)
     a_mask = torch.from_numpy(batch["a_mask"]).to(device).bool()
     pl = torch.gather(place_map.reshape(b, -1), 1, a_pidx)
     cl = torch.gather(claim_logits, 1, a_ltok)

@@ -633,18 +633,20 @@ impl BatchedNetSelfPlay {
 
         // Snapshot leaf states + build per-action descriptors (cheap, sequential).
         let mut states: Vec<GameState> = Vec::with_capacity(b);
-        let mut a_type = vec![-1i64; b * amax];
-        let mut a_pidx = vec![0i64; b * amax];
-        let mut a_ltok = vec![0i64; b * amax];
+        // Descriptors ship narrow (5 bytes/entry vs 40 as i64) and are cast back to i64 on the
+        // GPU for `gather`: a_type ∈ {-1,0,1,2}, a_pidx ∈ [0,675], a_ltok ∈ [0,7].
+        let mut a_type = vec![-1i8; b * amax];
+        let mut a_pidx = vec![0i16; b * amax];
+        let mut a_ltok = vec![0i8; b * amax];
         let mut a_mask = vec![0u8; b * amax];
         for (i, &slot) in self.pending.iter().enumerate() {
             let node = &self.games[slot].arena[self.games[slot].pending_leaf as usize];
             states.push(node.gs);
             for (j, &act) in node.actions.iter().enumerate() {
                 let (t, p, l) = action_descriptor(act, node.gs.phase);
-                a_type[i * amax + j] = t;
-                a_pidx[i * amax + j] = p;
-                a_ltok[i * amax + j] = l;
+                a_type[i * amax + j] = t as i8;
+                a_pidx[i * amax + j] = p as i16;
+                a_ltok[i * amax + j] = l as i8;
                 a_mask[i * amax + j] = 1;
             }
         }
