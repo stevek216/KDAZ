@@ -245,12 +245,20 @@ def _gpu_forward(net, batch, device, use_amp, prof=None):
     return logits.float(), value_rel
 
 
-def _timed_collect(pool):
-    """Run a pool's collect, returning (batch, wall_seconds) so the overlap loop can see the
-    collect's actual duration (how close it is to surfacing from behind the GPU path)."""
+def _backup_then_collect(pending, pool_next):
+    """Worker task: apply the PREVIOUS round's tree backup (Rust, GIL-released), then collect the
+    next pool. Both run on the worker thread so they overlap the main thread's GPU forward —
+    moving the ~1.4ms backup off the critical path. `pending` is (pool, logits_np, value_np) or
+    None (first round). Returns (batch, backup_seconds, collect_seconds)."""
+    bdur = 0.0
+    if pending is not None:
+        pool_prev, logits_np, value_np = pending
+        t = time.perf_counter()
+        pool_prev.apply(logits_np, value_np)
+        bdur = time.perf_counter() - t
     t = time.perf_counter()
-    b = pool.collect()
-    return b, time.perf_counter() - t
+    b = pool_next.collect()
+    return b, bdur, time.perf_counter() - t
 
 
 def run_netbatch_overlap(args):
@@ -316,36 +324,41 @@ def run_netbatch_overlap(args):
     batch = pools[cur].collect()
     exhausted[cur] = batch["b"] == 0
     total_leaves += batch["b"]
+    pending_backup = None  # (pool, logits_np, value_np) deferred one round so the worker applies it
 
     while True:
         other = 1 - cur
         rounds += 1
-        # Hand the OTHER pool's collect to the worker thread (Rust's pump/encode release the GIL),
-        # so it runs concurrently with this thread's full GPU path on `cur`.
-        fut = worker.submit(_timed_collect, pools[other])
-        # Main thread: H2D + forward + sync + backup for `cur`. The synchronous H2D releases the
-        # GIL, so the worker's collect genuinely overlaps it (that is the whole point).
+        # Worker thread: apply the PREVIOUS round's backup, then collect `other`. Both are Rust /
+        # GIL-released, so the whole thing overlaps this thread's GPU forward. (pending_backup's
+        # pool is always `other`, so backup precedes that pool's next collect — order preserved.)
+        fut = worker.submit(_backup_then_collect, pending_backup, pools[other])
+        # Main thread: H2D + forward + D2H for `cur` only (the backup is now off this path).
         if batch["b"] > 0:
             gpu = _gpu_forward(net, batch, device, use_amp, prof=fph)
             ta = time.perf_counter()
             logits_np, value_np = gpu[0].cpu().numpy(), gpu[1].cpu().numpy()
             if prof:
-                ph["d2h"] += time.perf_counter() - ta; ta = time.perf_counter()
-            pools[cur].apply(logits_np, value_np)
-            if prof:
-                ph["backup"] += time.perf_counter() - ta
+                ph["d2h"] += time.perf_counter() - ta
+            pending_backup = (pools[cur], logits_np, value_np)
+        else:
+            pending_backup = None
         ta = time.perf_counter()
         drain(cur)
         if prof:
             ph["drain"] += time.perf_counter() - ta; ta = time.perf_counter()
-        # Join the worker (collect_wait ≈ 0 means the collect was fully hidden behind the GPU).
-        obatch, cdur = fut.result()
+        # Join the worker (collect_wait ≈ 0 ⇒ backup+collect fully hidden behind the GPU).
+        obatch, bdur, cdur = fut.result()
         if prof:
             ph["collect_wait"] += time.perf_counter() - ta
             ph["collect_actual"] += cdur
+            ph["backup"] += bdur
         exhausted[other] = obatch["b"] == 0
         total_leaves += obatch["b"]
         if exhausted[0] and exhausted[1]:
+            # Flush the final deferred backup so the last evaluated batch isn't dropped.
+            if pending_backup is not None:
+                pending_backup[0].apply(pending_backup[1], pending_backup[2])
             break
         batch, cur = obatch, other
 
@@ -368,16 +381,17 @@ def run_netbatch_overlap(args):
     if prof and rounds:
         # The round = the sequential main-thread phases; collect_actual runs in PARALLEL on the
         # worker (shown separately, not summed). collect_wait ≈ 0 ⇒ collect hidden behind the GPU.
-        main_keys = ["h2d", "forward", "gather", "d2h", "backup", "drain", "collect_wait"]
+        main_keys = ["h2d", "forward", "gather", "d2h", "drain", "collect_wait"]
         round_ms = sum(ph[k] for k in main_keys) / rounds * 1000
         print(f"  per-round MAIN-THREAD breakdown over {rounds} rounds ({round_ms:.2f} ms/round):")
         for k in main_keys:
             ms = ph[k] / rounds * 1000
             print(f"    {k:>12}: {ms:6.2f} ms ({100 * ms / round_ms:4.1f}%)")
-        cactual = ph["collect_actual"] / rounds * 1000
-        gpu_ms = sum(ph[k] for k in ("h2d", "forward", "gather", "d2h", "backup")) / rounds * 1000
-        print(f"    {'collect||':>12}: {cactual:6.2f} ms  (worker, overlaps the {gpu_ms:.2f} ms GPU span; "
-              f"margin {gpu_ms - cactual:+.2f} ms)")
+        gpu_ms = sum(ph[k] for k in ("h2d", "forward", "gather", "d2h")) / rounds * 1000
+        bk = ph["backup"] / rounds * 1000
+        ca = ph["collect_actual"] / rounds * 1000
+        print(f"    worker||: backup {bk:.2f} + collect {ca:.2f} = {bk + ca:.2f} ms  "
+              f"(vs {gpu_ms:.2f} ms main GPU span; margin {gpu_ms - (bk + ca):+.2f} ms)")
 
 
 def run_rust(args):

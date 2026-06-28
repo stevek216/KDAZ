@@ -723,17 +723,32 @@ impl BatchedNetSelfPlay {
 
     /// Apply the net outputs for this round's batch: `logits [B, Amax]` (per-action policy
     /// logits, illegal = anything; masked by Amax) and `value [B, pc]` (seat-relative).
-    fn apply(&mut self, logits: PyReadonlyArray2<f32>, value: PyReadonlyArray2<f32>) {
+    fn apply(
+        &mut self,
+        py: Python<'_>,
+        logits: PyReadonlyArray2<f32>,
+        value: PyReadonlyArray2<f32>,
+    ) {
+        // Copy the (already host-side) net outputs out of numpy under the GIL...
         let la = logits.as_array();
         let va = value.as_array();
+        let amax = la.shape()[1];
         let pc = self.players;
-        for (k, &slot) in self.pending.iter().enumerate() {
-            let na = self.games[slot].pending_na();
-            let lrow: Vec<f32> = (0..na).map(|j| la[[k, j]]).collect();
-            let vrow: Vec<f32> = (0..pc).map(|j| va[[k, j]]).collect();
-            self.games[slot].apply_eval(&lrow, &vrow);
-        }
-        self.pending.clear();
+        let logits_flat: Vec<f32> = la.iter().copied().collect();
+        let value_flat: Vec<f32> = va.iter().copied().collect();
+        let pending = std::mem::take(&mut self.pending);
+        let games = &mut self.games;
+        // ...then back up the trees with the GIL released, so this whole call can run on the
+        // overlap loop's worker thread, concurrent with the main thread's GPU forward.
+        py.allow_threads(|| {
+            for (k, &slot) in pending.iter().enumerate() {
+                let na = games[slot].pending_na();
+                games[slot].apply_eval(
+                    &logits_flat[k * amax..k * amax + na],
+                    &value_flat[k * pc..k * pc + pc],
+                );
+            }
+        });
     }
 
     /// Drain finished games' corpus lines (one JSON line per recorded decision).
