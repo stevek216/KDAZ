@@ -16,6 +16,11 @@
 
 #![allow(clippy::useless_conversion)] // PyO3 codegen on fallible methods (known false positive)
 
+// The batched self-play pump allocates ~7 small Vecs per MCTS node across all rayon cores;
+// mimalloc handles that multi-threaded churn far better than Windows' default heap.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use numpy::ndarray::{Array2, Array3, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
 use pyo3::exceptions::PyIndexError;

@@ -552,6 +552,9 @@ pub struct BatchedNetSelfPlay {
     finished: Vec<String>,
     total_games: usize,
     players: usize,
+    prof_pump: f64,
+    prof_encode: f64,
+    prof_calls: u64,
 }
 
 #[pymethods]
@@ -602,14 +605,30 @@ impl BatchedNetSelfPlay {
             finished: Vec::new(),
             total_games,
             players: players as usize,
+            prof_pump: 0.0,
+            prof_encode: 0.0,
+            prof_calls: 0,
         }
+    }
+
+    /// `(pump_ms, encode_ms)` accumulated across all `collect` calls — the engine-side cost split
+    /// (pump = MCTS descent + clone + legal_actions; encode = board/lines/glob feature encoding).
+    fn prof(&self) -> (f64, f64, u64) {
+        (
+            self.prof_pump * 1000.0,
+            self.prof_encode * 1000.0,
+            self.prof_calls,
+        )
     }
 
     /// Advance every game one simulation; return the batched net inputs + action descriptors
     /// for all leaves needing eval (a dict of numpy arrays, `b` = number of leaves; 0 = done).
     fn collect<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let games = &mut self.games;
+        let t_pump = std::time::Instant::now();
         py.allow_threads(|| games.par_iter_mut().for_each(|g| g.pump()));
+        self.prof_pump += t_pump.elapsed().as_secs_f64();
+        self.prof_calls += 1;
 
         self.pending.clear();
         for (slot, g) in self.games.iter_mut().enumerate() {
@@ -659,6 +678,7 @@ impl BatchedNetSelfPlay {
         let mut board = vec![0u8; b * per_board];
         let mut lines = vec![0f32; b * encoder::LINES_LEN];
         let mut glob = vec![0f32; b * glen];
+        let t_enc = std::time::Instant::now();
         py.allow_threads(|| {
             board
                 .par_chunks_mut(per_board.max(1))
@@ -670,6 +690,7 @@ impl BatchedNetSelfPlay {
                     encoder::encode_aux(gs, lc, gc);
                 });
         });
+        self.prof_encode += t_enc.elapsed().as_secs_f64();
 
         let d = PyDict::new_bound(py);
         d.set_item("b", b)?;
