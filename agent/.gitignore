@@ -17,8 +17,14 @@ models/
 *.pt
 *.pth
 *.safetensors
-runs/
 logs/
+# self-play corpora — large, never commit
 data/
 replay_buffer/
 traces/
+
+# ...but DO version trained checkpoints so the repo is clone-and-go.
+# Everything else in runs/ (traced models *.ts.pt, parity dumps) stays ignored.
+runs/*
+!runs/*.best.pt
+!runs/*.last.pt
