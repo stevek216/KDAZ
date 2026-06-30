@@ -224,7 +224,9 @@ enum Step {
 struct GameSearch {
     players: usize,
     variants: Variants,
-    n_sims: u32,
+    sims_by_agent: [u32; 2], // sims for agent A / B; 0 = raw net (expand root, play argmax priors)
+    cur_target: u32,         // effective sim target for the current move (set in start_search)
+    cur_raw: bool,           // current move is a raw-net (no-search) move
     c_puct: f32,
     temp_moves: u32,
     alpha: f32,
@@ -286,7 +288,8 @@ impl GameSearch {
         total: usize,
         players: u8,
         variants: Variants,
-        n_sims: u32,
+        sims_a: u32,
+        sims_b: u32,
         c_puct: f32,
         temp_moves: u32,
         alpha: f32,
@@ -298,7 +301,9 @@ impl GameSearch {
         GameSearch {
             players: pc,
             variants,
-            n_sims,
+            sims_by_agent: [sims_a, sims_b],
+            cur_target: sims_a.max(1),
+            cur_raw: false,
             c_puct,
             temp_moves,
             alpha,
@@ -369,6 +374,11 @@ impl GameSearch {
                         self.sims_done = 0;
                         self.has_tree = true;
                         self.root_noised = false;
+                        // The mover's agent picks this move's sim budget (0 sims = raw net: just
+                        // expand the root and play argmax(priors), which needs 1 net eval).
+                        let s = self.sims_by_agent[self.seat_agent[self.gs.to_act as usize]];
+                        self.cur_raw = s == 0;
+                        self.cur_target = s.max(1);
                         return true;
                     }
                 }
@@ -488,7 +498,9 @@ impl GameSearch {
             self.rec_policy.push(policy.clone());
         }
 
-        let a = if self.move_no < self.temp_moves {
+        let a = if self.cur_raw {
+            argmax_f(&self.arena[root].priors) // raw net: play the policy head directly
+        } else if self.move_no < self.temp_moves {
             sample_policy(&policy, &mut self.rng)
         } else {
             argmax_f(&policy)
@@ -552,7 +564,7 @@ impl GameSearch {
                 self.finalize();
                 return Step::Over;
             }
-            if self.sims_done >= self.n_sims {
+            if self.sims_done >= self.cur_target {
                 self.commit_move();
                 continue;
             }
@@ -741,6 +753,7 @@ impl BatchedNetSelfPlay {
                     players,
                     variants,
                     n_sims,
+                    n_sims, // self-play: one net, both "agents" use the same sims
                     c_puct,
                     temp_moves,
                     dirichlet_alpha,
@@ -862,14 +875,15 @@ pub struct BatchedArena {
 #[pymethods]
 impl BatchedArena {
     #[new]
-    #[pyo3(signature = (n_games, total_games, players, n_sims, c_puct = 1.5, seed = 0,
+    #[pyo3(signature = (n_games, total_games, players, sims_a, sims_b, c_puct = 1.5, seed = 0,
                         harmony = true, middle_kingdom = true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_games: usize,
         total_games: usize,
         players: u8,
-        n_sims: u32,
+        sims_a: u32, // agent A sims (0 = raw net)
+        sims_b: u32, // agent B sims (0 = raw net)
         c_puct: f32,
         seed: u64,
         harmony: bool,
@@ -889,7 +903,8 @@ impl BatchedArena {
                     total_games,
                     players,
                     variants,
-                    n_sims,
+                    sims_a,
+                    sims_b,
                     c_puct,
                     0,     // temp_moves = 0 -> greedy (best play, no exploration)
                     0.0,   // alpha (unused — no noise)

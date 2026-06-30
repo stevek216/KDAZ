@@ -207,14 +207,14 @@ def run_batched_arena(args):
     from kdagent.selfplay import _gpu_forward
 
     def parse(spec):
-        if not spec.startswith("netmcts:"):
-            raise SystemExit("--batched needs netmcts:SIMS:CKPT for both --a and --b")
-        _, sims, path = spec.split(":", 2)
-        return int(sims), path
+        if spec.startswith("netmcts:"):
+            _, sims, path = spec.split(":", 2)
+            return int(sims), path
+        if spec.startswith("net:"):
+            return 0, spec[len("net:"):]  # raw net: play the policy head, no search (0 sims)
+        raise SystemExit("--batched needs netmcts:SIMS:CKPT or net:CKPT for both --a and --b")
 
     (sims_a, path_a), (sims_b, path_b) = parse(args.a), parse(args.b)
-    if sims_a != sims_b:
-        raise SystemExit(f"--batched needs equal sims for both agents ({sims_a} != {sims_b})")
     device, pc = args.device, args.players
     use_amp = str(device).startswith("cuda")
     net_a, _ = load_net(path_a, device)
@@ -224,7 +224,7 @@ def run_batched_arena(args):
         net_b = net_b.to(memory_format=torch.channels_last)
 
     pool = kd.BatchedArena(n_games=args.concurrent, total_games=args.games, players=pc,
-                           n_sims=sims_a, c_puct=args.c_puct, seed=args.seed,
+                           sims_a=sims_a, sims_b=sims_b, c_puct=args.c_puct, seed=args.seed,
                            harmony=args.harmony, middle_kingdom=args.middle_kingdom)
     empty_l, empty_v = np.zeros((0, 1), np.float32), np.zeros((0, pc), np.float32)
 
@@ -234,9 +234,11 @@ def run_batched_arena(args):
         logits, value_rel = _gpu_forward(net, sub, device, use_amp)
         return logits.cpu().numpy(), value_rel.cpu().numpy()
 
-    a_name = f"netmcts{sims_a}:{os.path.basename(path_a)}"
-    b_name = f"netmcts{sims_b}:{os.path.basename(path_b)}"
-    print(f"{a_name} vs {b_name}  (batched, {args.games} games @ {sims_a} sims, "
+    def agent_name(sims, path):
+        return f"{'net' if sims == 0 else f'netmcts{sims}'}:{os.path.basename(path)}"
+
+    a_name, b_name = agent_name(sims_a, path_a), agent_name(sims_b, path_b)
+    print(f"{a_name} vs {b_name}  (batched, {args.games} games, "
           f"concurrent {args.concurrent}, device {device})", flush=True)
 
     t0 = last = time.perf_counter()
