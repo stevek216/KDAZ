@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="cap training records (smoke tests)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="runs/net", help="checkpoint prefix (.best.pt / .last.pt)")
+    ap.add_argument("--no-save-every-epoch", dest="save_every_epoch", action="store_false",
+                     help="skip .epochN.pt per-epoch checkpoints (val loss isn't always playing strength)")
     args = ap.parse_args()
 
     device = torch.device(args.device)
@@ -157,6 +159,8 @@ def main():
         torch.save(ckpt, f"{args.out}.last.pt")
         if is_best:
             torch.save(ckpt, f"{args.out}.best.pt")
+        if args.save_every_epoch:
+            torch.save(ckpt, f"{args.out}.epoch{epoch}.pt")
 
     print(f"done. best val {best:.4f} at epoch {best_epoch} -> {args.out}.best.pt", flush=True)
 
