@@ -3,11 +3,15 @@ opponent. Pairs with `train.py --save-every-epoch` (now the default): once a run
 behind `PREFIX.epochN.pt` files, this answers "which epoch actually plays best?" instead of
 trusting val loss (see CLAUDE.md discussion — val loss and playing strength can diverge).
 
-Each epoch is played as `netmcts:SIMS:CKPT` (or `net:CKPT`) at the *same* sims/agent-type as
-the opponent — only the checkpoint differs — so the comparison is apples-to-apples.
+By default each epoch is played as `netmcts:SIMS:CKPT` at the opponent's own sims (`net:CKPT`
+if the opponent is the raw net) — only the checkpoint differs. Pass `--sims` to use different
+candidate sims instead (a single value, or a comma list to grid-sweep epoch x sims); `--sims 0`
+means the candidate plays its raw net policy, no search.
 
     cd agent
     .venv/Scripts/python -m kdagent.epoch_sweep --prefix runs/gen0 \
+        --opponent netmcts:32:runs/gen0.best.pt --games 1500 --device cuda
+    .venv/Scripts/python -m kdagent.epoch_sweep --prefix runs/gen0 --sims 16,32,64 \
         --opponent netmcts:32:runs/gen0.best.pt --games 1500 --device cuda
 """
 from __future__ import annotations
@@ -33,14 +37,18 @@ def find_epoch_checkpoints(prefix):
     return found
 
 
-def hero_spec(opponent_spec, ckpt_path):
-    """Same agent type/sims as the opponent, pointed at a different checkpoint."""
+def opponent_sims(opponent_spec):
+    """Sims encoded in the opponent spec (0 for a raw `net:CKPT`)."""
     if opponent_spec.startswith("netmcts:"):
-        _, sims, _ = opponent_spec.split(":", 2)
-        return f"netmcts:{sims}:{ckpt_path}"
+        return int(opponent_spec.split(":", 2)[1])
     if opponent_spec.startswith("net:"):
-        return f"net:{ckpt_path}"
+        return 0
     raise SystemExit(f"--opponent must be netmcts:SIMS:CKPT or net:CKPT, got {opponent_spec!r}")
+
+
+def hero_spec(ckpt_path, sims):
+    """`sims=0` plays the raw net policy (no search); otherwise netmcts at this sim count."""
+    return f"net:{ckpt_path}" if sims == 0 else f"netmcts:{sims}:{ckpt_path}"
 
 
 def main():
@@ -50,6 +58,9 @@ def main():
                     help="checkpoint prefix (same value as train.py's --out), e.g. runs/gen0")
     ap.add_argument("--opponent", required=True,
                     help="fixed field agent: netmcts:SIMS:CKPT or net:CKPT")
+    ap.add_argument("--sims", default=None,
+                    help="candidate sim count(s), comma-separated (e.g. 16,32,64); "
+                         "0 = raw net policy; default: match --opponent's sims")
     ap.add_argument("--games", type=int, default=1000)
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
@@ -64,20 +75,23 @@ def main():
     checkpoints = find_epoch_checkpoints(args.prefix)
     if not checkpoints:
         raise SystemExit(f"no {args.prefix}.epochN.pt checkpoints found")
+    sims_list = ([opponent_sims(args.opponent)] if args.sims is None
+                 else [int(s) for s in args.sims.split(",")])
 
     results = []
     for epoch, ckpt in checkpoints:
-        args.a = hero_spec(args.opponent, ckpt)
-        args.b = args.opponent
-        print(f"\n=== epoch {epoch} ({ckpt.name}) ===", flush=True)
-        mean, ci, n, verdict = run_batched_arena(args)
-        results.append((epoch, mean, ci, n, verdict))
+        for sims in sims_list:
+            args.a = hero_spec(ckpt, sims)
+            args.b = args.opponent
+            print(f"\n=== epoch {epoch} ({ckpt.name}), sims {sims} ===", flush=True)
+            mean, ci, n, verdict = run_batched_arena(args)
+            results.append((epoch, sims, mean, ci, n, verdict))
 
-    print("\nepoch   win%    +/-      n  verdict")
-    for epoch, mean, ci, n, verdict in results:
-        print(f"{epoch:5d}  {mean * 100:5.1f}  {ci * 100:5.1f}  {n:5d}  {verdict}")
-    best_epoch, best_mean, *_ = max(results, key=lambda r: r[1])
-    print(f"\nbest: epoch {best_epoch} ({best_mean * 100:.1f}%)")
+    print("\nepoch   sims   win%    +/-      n  verdict")
+    for epoch, sims, mean, ci, n, verdict in results:
+        print(f"{epoch:5d}  {sims:5d}  {mean * 100:5.1f}  {ci * 100:5.1f}  {n:5d}  {verdict}")
+    best_epoch, best_sims, best_mean, *_ = max(results, key=lambda r: r[2])
+    print(f"\nbest: epoch {best_epoch}, sims {best_sims} ({best_mean * 100:.1f}%)")
 
 
 if __name__ == "__main__":
