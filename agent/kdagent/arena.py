@@ -267,6 +267,7 @@ def run_batched_arena(args):
     verdict = ("hero stronger" if mean - ci > base else
                "hero weaker" if mean + ci < base else "inconclusive")
     print(f"verdict: {verdict}")
+    return mean, ci, n, verdict
 
 
 def main():
