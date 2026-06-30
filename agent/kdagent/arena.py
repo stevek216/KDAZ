@@ -197,6 +197,76 @@ def run_match(a_spec, b_spec, games, players=2, seed=0, device="cpu", variants=(
     return means[0], cis[0], n, secs
 
 
+def run_batched_arena(args):
+    """Fast arena: a Rust pool of games (like batched self-play) with both nets evaluated in one
+    GPU forward each per round. Requires `netmcts:SIMS:CKPT` for both --a and --b with equal SIMS.
+    ~100x faster than the single-game path. Reports A's score (win 1 / tie 0.5 / loss 0)."""
+    import torch
+
+    from kdagent.net import load_net
+    from kdagent.selfplay import _gpu_forward
+
+    def parse(spec):
+        if not spec.startswith("netmcts:"):
+            raise SystemExit("--batched needs netmcts:SIMS:CKPT for both --a and --b")
+        _, sims, path = spec.split(":", 2)
+        return int(sims), path
+
+    (sims_a, path_a), (sims_b, path_b) = parse(args.a), parse(args.b)
+    if sims_a != sims_b:
+        raise SystemExit(f"--batched needs equal sims for both agents ({sims_a} != {sims_b})")
+    device, pc = args.device, args.players
+    use_amp = str(device).startswith("cuda")
+    net_a, _ = load_net(path_a, device)
+    net_b, _ = load_net(path_b, device)
+    if use_amp:
+        net_a = net_a.to(memory_format=torch.channels_last)
+        net_b = net_b.to(memory_format=torch.channels_last)
+
+    pool = kd.BatchedArena(n_games=args.concurrent, total_games=args.games, players=pc,
+                           n_sims=sims_a, c_puct=args.c_puct, seed=args.seed,
+                           harmony=args.harmony, middle_kingdom=args.middle_kingdom)
+    empty_l, empty_v = np.zeros((0, 1), np.float32), np.zeros((0, pc), np.float32)
+
+    def fwd(net, sub):
+        if sub["b"] == 0:
+            return empty_l, empty_v
+        logits, value_rel = _gpu_forward(net, sub, device, use_amp)
+        return logits.cpu().numpy(), value_rel.cpu().numpy()
+
+    a_name = f"netmcts{sims_a}:{os.path.basename(path_a)}"
+    b_name = f"netmcts{sims_b}:{os.path.basename(path_b)}"
+    print(f"{a_name} vs {b_name}  (batched, {args.games} games @ {sims_a} sims, "
+          f"concurrent {args.concurrent}, device {device})", flush=True)
+
+    t0 = last = time.perf_counter()
+    while not pool.done():
+        batch = pool.collect()
+        la, va = fwd(net_a, batch["a"])
+        lb, vb = fwd(net_b, batch["b"])
+        pool.apply(la, va, lb, vb)
+        if time.perf_counter() - last > 1.0:
+            wa, wb, ties, done = pool.stats()
+            el = time.perf_counter() - t0
+            sc = (wa + 0.5 * ties) / max(1, done)
+            print(f"  {done}/{args.games} | A {sc * 100:4.1f}% | {done / el:.1f} games/s",
+                  flush=True, end="\r")
+            last = time.perf_counter()
+
+    wa, wb, ties, _ = pool.stats()
+    n = wa + wb + ties
+    el = time.perf_counter() - t0
+    mean = (wa + 0.5 * ties) / max(1, n)
+    var = (wa * (1 - mean) ** 2 + wb * mean ** 2 + ties * (0.5 - mean) ** 2) / max(1, n - 1)
+    ci = 1.96 * math.sqrt(var / max(1, n))
+    base = 1.0 / pc
+    print(f"\n{a_name}: {mean * 100:.1f}% +/- {ci * 100:.1f}  "
+          f"({n} games, {n / el:.1f} games/s, even = {base * 100:.0f}%)  [A {wa} / B {wb} / tie {ties}]")
+    verdict = ("hero stronger" if mean - ci > base else
+               "hero weaker" if mean + ci < base else "inconclusive")
+    print(f"verdict: {verdict}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Agent arena for Kingdomino (Mighty Duel).")
     ap.add_argument("--a", default="mcts:64", help="hero: random | mcts:SIMS | net:CKPT | netmcts:SIMS:CKPT")
@@ -205,10 +275,18 @@ def main():
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu", help="torch device for net agents (e.g. cuda)")
+    ap.add_argument("--batched", action="store_true",
+                    help="fast batched arena (netmcts vs netmcts only); ~100x faster on GPU")
+    ap.add_argument("--concurrent", type=int, default=256, help="batched: games in flight")
+    ap.add_argument("--c-puct", dest="c_puct", type=float, default=1.5)
     ap.add_argument("--harmony", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
+
+    if args.batched:
+        run_batched_arena(args)
+        return
 
     a_name, b_name = make_agent(args.a).name, make_agent(args.b).name
     variants = (args.harmony, args.middle_kingdom)

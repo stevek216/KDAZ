@@ -248,12 +248,29 @@ struct GameSearch {
     rec_toact: Vec<usize>,
     out_lines: Vec<String>,
 
+    // Arena mode (record = false): skip corpus recording; instead log each finished game's
+    // winning agent. `seat_agent[s]` = which agent (0/1) plays seat `s` in the current game
+    // (alternated by game index for fairness).
+    record: bool,
+    seat_agent: [usize; MAX_PLAYERS],
+    result_log: Vec<i8>, // per finished game: 0 = agent A won, 1 = agent B won, -1 = tie
+
     idle: bool,
     base_seed: u64,
     stride: usize,
     total: usize,
     game_index: usize,
     completed: usize,
+}
+
+/// Seat→agent assignment for arena fairness: agent A and B swap seats by game index.
+fn seat_agent_for(game_index: usize, pc: usize) -> [usize; MAX_PLAYERS] {
+    let mut sa = [0usize; MAX_PLAYERS];
+    let off = game_index % pc.max(1);
+    for (s, x) in sa.iter_mut().enumerate().take(pc) {
+        *x = (s + off) % pc;
+    }
+    sa
 }
 
 fn game_seed(base: u64, k: usize) -> u64 {
@@ -274,10 +291,12 @@ impl GameSearch {
         temp_moves: u32,
         alpha: f32,
         eps: f32,
+        record: bool,
     ) -> Self {
         let first = game_seed(base_seed, slot);
+        let pc = players as usize;
         GameSearch {
-            players: players as usize,
+            players: pc,
             variants,
             n_sims,
             c_puct,
@@ -299,6 +318,9 @@ impl GameSearch {
             rec_policy: Vec::new(),
             rec_toact: Vec::new(),
             out_lines: Vec::new(),
+            record,
+            seat_agent: seat_agent_for(slot, pc),
+            result_log: Vec::new(),
             idle: false,
             base_seed,
             stride,
@@ -319,6 +341,7 @@ impl GameSearch {
         self.root_noised = false;
         self.pending_leaf = -1;
         self.pending_path.clear();
+        self.seat_agent = seat_agent_for(self.game_index, self.players);
     }
 
     fn push_node(&mut self, gs: GameState) -> usize {
@@ -427,7 +450,7 @@ impl GameSearch {
         }
         self.arena[leaf].value = absval;
         self.arena[leaf].expanded = true;
-        if leaf == self.root && !self.root_noised {
+        if leaf == self.root && !self.root_noised && self.eps > 0.0 {
             add_dirichlet(&mut self.arena[leaf], self.alpha, self.eps, &mut self.rng);
             self.root_noised = true;
         }
@@ -457,11 +480,13 @@ impl GameSearch {
             })
             .collect();
 
-        self.rec_obs.push(crate::obs_json(&self.arena[root].gs));
-        self.rec_legal
-            .push(crate::legal_json(&self.arena[root].actions));
-        self.rec_toact.push(self.arena[root].to_act);
-        self.rec_policy.push(policy.clone());
+        if self.record {
+            self.rec_obs.push(crate::obs_json(&self.arena[root].gs));
+            self.rec_legal
+                .push(crate::legal_json(&self.arena[root].actions));
+            self.rec_toact.push(self.arena[root].to_act);
+            self.rec_policy.push(policy.clone());
+        }
 
         let a = if self.move_no < self.temp_moves {
             sample_policy(&policy, &mut self.rng)
@@ -477,19 +502,35 @@ impl GameSearch {
     fn finalize(&mut self) {
         let outcome = terminal_value(&self.gs).unwrap_or([0.0; MAX_PLAYERS]);
         let pc = self.players;
-        let value: Vec<f32> = outcome[..pc].to_vec();
-        let val = serde_json::to_string(&value).unwrap();
-        for i in 0..self.rec_obs.len() {
-            let pol = serde_json::to_string(&self.rec_policy[i]).unwrap();
-            self.out_lines.push(format!(
-                "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{}}}",
-                self.rec_obs[i], self.rec_legal[i], pol, self.rec_toact[i], val
-            ));
+        if self.record {
+            let value: Vec<f32> = outcome[..pc].to_vec();
+            let val = serde_json::to_string(&value).unwrap();
+            for i in 0..self.rec_obs.len() {
+                let pol = serde_json::to_string(&self.rec_policy[i]).unwrap();
+                self.out_lines.push(format!(
+                    "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{}}}",
+                    self.rec_obs[i], self.rec_legal[i], pol, self.rec_toact[i], val
+                ));
+            }
+            self.rec_obs.clear();
+            self.rec_legal.clear();
+            self.rec_policy.clear();
+            self.rec_toact.clear();
+        } else {
+            // Arena: tally which agent won (seat with the max outcome; tie if shared).
+            let mx = outcome[..pc]
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let winners: Vec<usize> = (0..pc)
+                .filter(|&s| (outcome[s] - mx).abs() < 1e-6)
+                .collect();
+            self.result_log.push(if winners.len() > 1 {
+                -1
+            } else {
+                self.seat_agent[winners[0]] as i8
+            });
         }
-        self.rec_obs.clear();
-        self.rec_legal.clear();
-        self.rec_policy.clear();
-        self.rec_toact.clear();
         self.completed += 1;
     }
 
@@ -539,6 +580,114 @@ impl GameSearch {
     fn pending_na(&self) -> usize {
         self.arena[self.pending_leaf as usize].actions.len()
     }
+    /// Which agent's net should score the pending leaf: the current move's mover (the search
+    /// root's `to_act`) determines whose net evaluates the whole tree for this move.
+    fn pending_net(&self) -> usize {
+        self.seat_agent[self.arena[self.root].to_act]
+    }
+}
+
+/// Encode a set of pending leaves (`slots` into `games`) into the batched net-input dict —
+/// board (u8) / lines / glob + narrow per-action descriptors. Shared by self-play and arena.
+fn encode_batch_dict<'py>(
+    py: Python<'py>,
+    games: &[GameSearch],
+    slots: &[usize],
+    pc: usize,
+) -> PyResult<Bound<'py, PyDict>> {
+    let b = slots.len();
+    let d = PyDict::new_bound(py);
+    d.set_item("b", b)?;
+    if b == 0 {
+        return Ok(d);
+    }
+    let amax = slots
+        .iter()
+        .map(|&s| games[s].pending_na())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    let mut states: Vec<GameState> = Vec::with_capacity(b);
+    let mut a_type = vec![-1i8; b * amax];
+    let mut a_pidx = vec![0i16; b * amax];
+    let mut a_ltok = vec![0i8; b * amax];
+    let mut a_mask = vec![0u8; b * amax];
+    for (i, &slot) in slots.iter().enumerate() {
+        let node = &games[slot].arena[games[slot].pending_leaf as usize];
+        states.push(node.gs);
+        for (j, &act) in node.actions.iter().enumerate() {
+            let (t, p, l) = action_descriptor(act, node.gs.phase);
+            a_type[i * amax + j] = t as i8;
+            a_pidx[i * amax + j] = p as i16;
+            a_ltok[i * amax + j] = l as i8;
+            a_mask[i * amax + j] = 1;
+        }
+    }
+
+    let per_board = encoder::board_per_state(pc);
+    let glen = encoder::glob_len(pc);
+    let mut board = vec![0u8; b * per_board];
+    let mut lines = vec![0f32; b * encoder::LINES_LEN];
+    let mut glob = vec![0f32; b * glen];
+    py.allow_threads(|| {
+        board
+            .par_chunks_mut(per_board.max(1))
+            .zip(lines.par_chunks_mut(encoder::LINES_LEN))
+            .zip(glob.par_chunks_mut(glen.max(1)))
+            .zip(states.par_iter())
+            .for_each(|(((bc, lc), gc), gs)| {
+                encoder::encode_board(gs, bc, 1u8);
+                encoder::encode_aux(gs, lc, gc);
+            });
+    });
+
+    d.set_item(
+        "board",
+        Array4::from_shape_vec(
+            (b, pc * encoder::N_PLANES, encoder::STORE, encoder::STORE),
+            board,
+        )
+        .unwrap()
+        .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "lines",
+        Array3::from_shape_vec((b, 8, encoder::LINE_FEATS), lines)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "glob",
+        Array2::from_shape_vec((b, glen), glob)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "a_type",
+        Array2::from_shape_vec((b, amax), a_type)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "a_pidx",
+        Array2::from_shape_vec((b, amax), a_pidx)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "a_ltok",
+        Array2::from_shape_vec((b, amax), a_ltok)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "a_mask",
+        Array2::from_shape_vec((b, amax), a_mask)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    Ok(d)
 }
 
 // =================================================================================
@@ -596,6 +745,7 @@ impl BatchedNetSelfPlay {
                     temp_moves,
                     dirichlet_alpha,
                     noise_eps,
+                    true, // record corpus
                 )
             })
             .collect();
@@ -640,105 +790,10 @@ impl BatchedNetSelfPlay {
             }
         }
 
-        let b = self.pending.len();
         let pc = self.players;
-        let amax = self
-            .pending
-            .iter()
-            .map(|&s| self.games[s].pending_na())
-            .max()
-            .unwrap_or(1)
-            .max(1);
-
-        // Snapshot leaf states + build per-action descriptors (cheap, sequential).
-        let mut states: Vec<GameState> = Vec::with_capacity(b);
-        // Descriptors ship narrow (5 bytes/entry vs 40 as i64) and are cast back to i64 on the
-        // GPU for `gather`: a_type ∈ {-1,0,1,2}, a_pidx ∈ [0,675], a_ltok ∈ [0,7].
-        let mut a_type = vec![-1i8; b * amax];
-        let mut a_pidx = vec![0i16; b * amax];
-        let mut a_ltok = vec![0i8; b * amax];
-        let mut a_mask = vec![0u8; b * amax];
-        for (i, &slot) in self.pending.iter().enumerate() {
-            let node = &self.games[slot].arena[self.games[slot].pending_leaf as usize];
-            states.push(node.gs);
-            for (j, &act) in node.actions.iter().enumerate() {
-                let (t, p, l) = action_descriptor(act, node.gs.phase);
-                a_type[i * amax + j] = t as i8;
-                a_pidx[i * amax + j] = p as i16;
-                a_ltok[i * amax + j] = l as i8;
-                a_mask[i * amax + j] = 1;
-            }
-        }
-
-        // Encode the leaf states into the batch buffers (rayon-parallel, GIL released). The board
-        // is a binary tensor, so it ships as u8 (4x less host→device traffic) and is cast to
-        // float on the GPU; lines/glob carry fractional features and stay f32.
-        let per_board = encoder::board_per_state(pc);
-        let glen = encoder::glob_len(pc);
-        let mut board = vec![0u8; b * per_board];
-        let mut lines = vec![0f32; b * encoder::LINES_LEN];
-        let mut glob = vec![0f32; b * glen];
         let t_enc = std::time::Instant::now();
-        py.allow_threads(|| {
-            board
-                .par_chunks_mut(per_board.max(1))
-                .zip(lines.par_chunks_mut(encoder::LINES_LEN))
-                .zip(glob.par_chunks_mut(glen.max(1)))
-                .zip(states.par_iter())
-                .for_each(|(((bc, lc), gc), gs)| {
-                    encoder::encode_board(gs, bc, 1u8);
-                    encoder::encode_aux(gs, lc, gc);
-                });
-        });
+        let d = encode_batch_dict(py, &self.games, &self.pending, pc)?;
         self.prof_encode += t_enc.elapsed().as_secs_f64();
-
-        let d = PyDict::new_bound(py);
-        d.set_item("b", b)?;
-        d.set_item(
-            "board",
-            Array4::from_shape_vec(
-                (b, pc * encoder::N_PLANES, encoder::STORE, encoder::STORE),
-                board,
-            )
-            .unwrap()
-            .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "lines",
-            Array3::from_shape_vec((b, 8, encoder::LINE_FEATS), lines)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "glob",
-            Array2::from_shape_vec((b, glen), glob)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "a_type",
-            Array2::from_shape_vec((b, amax), a_type)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "a_pidx",
-            Array2::from_shape_vec((b, amax), a_pidx)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "a_ltok",
-            Array2::from_shape_vec((b, amax), a_ltok)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
-        d.set_item(
-            "a_mask",
-            Array2::from_shape_vec((b, amax), a_mask)
-                .unwrap()
-                .into_pyarray_bound(py),
-        )?;
         Ok(d)
     }
 
@@ -786,6 +841,156 @@ impl BatchedNetSelfPlay {
         (
             self.games.iter().map(|g| g.completed).sum(),
             self.total_games,
+        )
+    }
+}
+
+// =================================================================================
+// Arena pool (PyO3) — agent A (net 0) vs agent B (net 1), batched the same way as
+// self-play. Each leaf is routed to the net of whichever agent is moving in that game.
+// =================================================================================
+
+#[pyclass]
+pub struct BatchedArena {
+    games: Vec<GameSearch>,
+    pending: [Vec<usize>; 2], // slots whose pending leaf needs net 0 (A) / net 1 (B)
+    players: usize,
+    wins: [u64; 2],
+    ties: u64,
+}
+
+#[pymethods]
+impl BatchedArena {
+    #[new]
+    #[pyo3(signature = (n_games, total_games, players, n_sims, c_puct = 1.5, seed = 0,
+                        harmony = true, middle_kingdom = true))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        n_games: usize,
+        total_games: usize,
+        players: u8,
+        n_sims: u32,
+        c_puct: f32,
+        seed: u64,
+        harmony: bool,
+        middle_kingdom: bool,
+    ) -> Self {
+        let variants = Variants {
+            harmony,
+            middle_kingdom,
+        };
+        let slots = n_games.min(total_games).max(1);
+        let games = (0..slots)
+            .map(|s| {
+                GameSearch::new(
+                    seed,
+                    s,
+                    slots,
+                    total_games,
+                    players,
+                    variants,
+                    n_sims,
+                    c_puct,
+                    0,     // temp_moves = 0 -> greedy (best play, no exploration)
+                    0.0,   // alpha (unused — no noise)
+                    0.0,   // eps = 0 -> no Dirichlet root noise
+                    false, // record = false -> arena mode: tally winners, no corpus
+                )
+            })
+            .collect();
+        BatchedArena {
+            games,
+            pending: [Vec::new(), Vec::new()],
+            players: players as usize,
+            wins: [0, 0],
+            ties: 0,
+        }
+    }
+
+    /// Advance every game one simulation; tally finished games, then return the two batched
+    /// inputs `{"a": ..., "b": ...}` for the leaves needing net A (agent 0) / net B (agent 1).
+    fn collect<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let games = &mut self.games;
+        py.allow_threads(|| games.par_iter_mut().for_each(|g| g.pump()));
+
+        self.pending[0].clear();
+        self.pending[1].clear();
+        for slot in 0..self.games.len() {
+            for &r in &self.games[slot].result_log {
+                match r {
+                    0 => self.wins[0] += 1,
+                    1 => self.wins[1] += 1,
+                    _ => self.ties += 1,
+                }
+            }
+            self.games[slot].result_log.clear();
+            if self.games[slot].has_pending() {
+                let net = self.games[slot].pending_net();
+                self.pending[net].push(slot);
+            }
+        }
+
+        let pc = self.players;
+        let d = PyDict::new_bound(py);
+        d.set_item(
+            "a",
+            encode_batch_dict(py, &self.games, &self.pending[0], pc)?,
+        )?;
+        d.set_item(
+            "b",
+            encode_batch_dict(py, &self.games, &self.pending[1], pc)?,
+        )?;
+        Ok(d)
+    }
+
+    /// Back up this round: `(logits_a, value_a)` for the net-A leaves and `(logits_b, value_b)`
+    /// for the net-B leaves (each `[B, *]`; pass `[0, *]` arrays for an empty side).
+    fn apply(
+        &mut self,
+        py: Python<'_>,
+        logits_a: PyReadonlyArray2<f32>,
+        value_a: PyReadonlyArray2<f32>,
+        logits_b: PyReadonlyArray2<f32>,
+        value_b: PyReadonlyArray2<f32>,
+    ) {
+        let pc = self.players;
+        let la = [logits_a.as_array(), logits_b.as_array()];
+        let va = [value_a.as_array(), value_b.as_array()];
+        let amax = [la[0].shape()[1], la[1].shape()[1]];
+        let lflat: [Vec<f32>; 2] = [
+            la[0].iter().copied().collect(),
+            la[1].iter().copied().collect(),
+        ];
+        let vflat: [Vec<f32>; 2] = [
+            va[0].iter().copied().collect(),
+            va[1].iter().copied().collect(),
+        ];
+        let pending = std::mem::take(&mut self.pending);
+        let games = &mut self.games;
+        py.allow_threads(|| {
+            for net in 0..2 {
+                for (k, &slot) in pending[net].iter().enumerate() {
+                    let na = games[slot].pending_na();
+                    games[slot].apply_eval(
+                        &lflat[net][k * amax[net]..k * amax[net] + na],
+                        &vflat[net][k * pc..k * pc + pc],
+                    );
+                }
+            }
+        });
+    }
+
+    fn done(&self) -> bool {
+        self.games.iter().all(|g| g.idle)
+    }
+
+    /// `(agent_a_wins, agent_b_wins, ties, completed)`.
+    fn stats(&self) -> (u64, u64, u64, usize) {
+        (
+            self.wins[0],
+            self.wins[1],
+            self.ties,
+            self.games.iter().map(|g| g.completed).sum(),
         )
     }
 }
