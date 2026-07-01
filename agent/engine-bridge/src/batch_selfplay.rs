@@ -72,6 +72,10 @@ fn new_node(gs: GameState) -> Node {
             node.terminal = true;
             node.expanded = true;
             node.value = terminal_value(&node.gs).unwrap_or([0.0; MAX_PLAYERS]);
+            // Match the [-1,1] search-value scale used for net-leaf backups (win 1 / loss -1).
+            for v in node.value[..pc].iter_mut() {
+                *v = 2.0 * *v - 1.0;
+            }
         }
         Decision::Chance => {
             node.chance = true;
@@ -456,7 +460,9 @@ impl GameSearch {
         let pc = self.arena[leaf].pc;
         let mut absval = [0f32; MAX_PLAYERS];
         for k in 0..pc {
-            absval[(to_act + k) % pc] = value_rel[k];
+            // Rescale the net value from [0,1] win-prob to [-1,1] so Q matches standard PUCT:
+            // unvisited actions (FPU Q=0) read as neutral, not "certain loss".
+            absval[(to_act + k) % pc] = 2.0 * value_rel[k] - 1.0;
         }
         self.arena[leaf].value = absval;
         self.arena[leaf].expanded = true;
