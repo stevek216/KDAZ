@@ -62,6 +62,10 @@ fn new_node(gs: GameState) -> Node {
             node.terminal = true;
             node.expanded = true;
             node.value = terminal_value(&node.gs).unwrap_or([0.0; MAX_PLAYERS]);
+            // Match the [-1,1] search-value scale (win 1 / loss -1) so FPU Q=0 is neutral.
+            for v in node.value[..pc].iter_mut() {
+                *v = 2.0 * *v - 1.0;
+            }
         }
         Decision::Chance => {
             node.chance = true;
@@ -130,11 +134,17 @@ fn sample_outcome(outcomes: &[(Action, f32)], rng: &mut impl Rng) -> usize {
     outcomes.len() - 1
 }
 
-/// A uniform-random playout to terminal (the rollout leaf value).
+/// A uniform-random playout to terminal (the rollout leaf value), on the [-1,1] search scale.
 fn rollout(mut gs: GameState, rng: &mut impl Rng, buf: &mut Vec<Action>) -> Value {
     loop {
         match current_decision(&gs) {
-            Decision::Terminal => return terminal_value(&gs).unwrap_or([0.0; MAX_PLAYERS]),
+            Decision::Terminal => {
+                let mut v = terminal_value(&gs).unwrap_or([0.0; MAX_PLAYERS]);
+                for x in v[..gs.player_count as usize].iter_mut() {
+                    *x = 2.0 * *x - 1.0;
+                }
+                return v;
+            }
             Decision::Chance => {
                 apply_chance(&mut gs, rng);
             }

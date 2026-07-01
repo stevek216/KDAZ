@@ -9,6 +9,10 @@
 
 `run(game)` (called at a player decision node) returns the root visit distribution over the
 node's legal actions (the policy target), the root value vector, and the tree root.
+
+Search values live on the **[-1,1]** scale (win 1 / loss -1, so FPU Q=0 is neutral for
+PUCT); evaluators and the engine speak [0,1], rescaled at the leaf. The root value returned
+by `run` is therefore also [-1,1] (2p: the two seats sum to ~0).
 """
 from __future__ import annotations
 
@@ -45,7 +49,9 @@ class Node:
         self.priors = self.N = self.W = self.value = self.outcomes = None
         self.to_act = None if (self.terminal or self.chance) else game.to_act()
         if self.terminal:
-            self.value = np.asarray(game.terminal_value(), dtype=np.float32)
+            # Rescale the engine's [0,1] outcome to the [-1,1] search scale (win 1 / loss -1)
+            # so PUCT's FPU Q=0 reads as neutral, not "certain loss".
+            self.value = 2.0 * np.asarray(game.terminal_value(), dtype=np.float32) - 1.0
         elif self.chance:
             # [(action_index, prob)] over the remaining-deck (or starting-order) outcomes.
             self.outcomes = [(o["index"], o["prob"]) for o in json.loads(game.chance_outcomes())]
@@ -81,7 +87,8 @@ class MCTS:
         node.priors = np.asarray(priors, dtype=np.float32)
         node.N = np.zeros(len(node.priors), dtype=np.int64)
         node.W = np.zeros((len(node.priors), node.pc), dtype=np.float32)
-        node.value = np.asarray(value, dtype=np.float32)
+        # Evaluators return [0,1] per-seat values (summing to ~1); rescale to [-1,1] here.
+        node.value = 2.0 * np.asarray(value, dtype=np.float32) - 1.0
         node.expanded = True
 
     def _simulate(self, node: Node) -> np.ndarray:

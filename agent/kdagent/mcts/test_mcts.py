@@ -18,7 +18,10 @@ def _check_outputs(policy, value, g):
     assert policy.shape == (a,) and np.all(np.isfinite(policy))
     assert abs(float(policy.sum()) - 1.0) < 1e-5
     assert value.shape == (g.player_count(),)
-    assert abs(float(value.sum()) - 1.0) < 1e-4, value
+    # Search values are [-1,1] (rescaled from the [0,1] outcome scale), so the per-seat
+    # values sum to 2·1 - pc (= 0 for 2p) instead of 1.
+    assert abs(float(value.sum()) - (2.0 - g.player_count())) < 1e-4, value
+    assert np.all(value >= -1.0 - 1e-4) and np.all(value <= 1.0 + 1e-4), value
 
 
 def test_rollout_search_outputs():
