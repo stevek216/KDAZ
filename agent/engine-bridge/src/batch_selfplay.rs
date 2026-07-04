@@ -253,6 +253,9 @@ struct GameSearch {
     rec_policy: Vec<Vec<f32>>,
     rec_toact: Vec<usize>,
     out_lines: Vec<String>,
+    // Terminal observation JSON per finished game (self-play mode only). Harvested every
+    // `collect`; the pool keeps or drops them depending on its `emit_summaries` flag.
+    summaries: Vec<String>,
 
     // Arena mode (record = false): skip corpus recording; instead log each finished game's
     // winning agent. `seat_agent[s]` = which agent (0/1) plays seat `s` in the current game
@@ -327,6 +330,7 @@ impl GameSearch {
             rec_policy: Vec::new(),
             rec_toact: Vec::new(),
             out_lines: Vec::new(),
+            summaries: Vec::new(),
             record,
             seat_agent: seat_agent_for(slot, pc),
             result_log: Vec::new(),
@@ -534,6 +538,8 @@ impl GameSearch {
             self.rec_legal.clear();
             self.rec_policy.clear();
             self.rec_toact.clear();
+            // Terminal snapshot (scores incl. bonus breakdown) for board-quality analysis.
+            self.summaries.push(crate::obs_json(&self.gs));
         } else {
             // Arena: tally which agent won (seat with the max outcome; tie if shared).
             let mx = outcome[..pc]
@@ -717,6 +723,8 @@ pub struct BatchedNetSelfPlay {
     games: Vec<GameSearch>,
     pending: Vec<usize>,
     finished: Vec<String>,
+    finished_summaries: Vec<String>,
+    emit_summaries: bool,
     total_games: usize,
     players: usize,
     prof_pump: f64,
@@ -729,7 +737,7 @@ impl BatchedNetSelfPlay {
     #[new]
     #[pyo3(signature = (n_games, total_games, players, n_sims, c_puct = 1.5, temp_moves = 12,
                         dirichlet_alpha = 0.3, noise_eps = 0.25, seed = 0,
-                        harmony = true, middle_kingdom = true))]
+                        harmony = true, middle_kingdom = true, summaries = false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_games: usize,
@@ -743,6 +751,7 @@ impl BatchedNetSelfPlay {
         seed: u64,
         harmony: bool,
         middle_kingdom: bool,
+        summaries: bool,
     ) -> Self {
         let variants = Variants {
             harmony,
@@ -772,6 +781,8 @@ impl BatchedNetSelfPlay {
             games,
             pending: Vec::new(),
             finished: Vec::new(),
+            finished_summaries: Vec::new(),
+            emit_summaries: summaries,
             total_games,
             players: players as usize,
             prof_pump: 0.0,
@@ -803,6 +814,13 @@ impl BatchedNetSelfPlay {
         for (slot, g) in self.games.iter_mut().enumerate() {
             if !g.out_lines.is_empty() {
                 self.finished.append(&mut g.out_lines);
+            }
+            if !g.summaries.is_empty() {
+                if self.emit_summaries {
+                    self.finished_summaries.append(&mut g.summaries);
+                } else {
+                    g.summaries.clear();
+                }
             }
             if g.has_pending() {
                 self.pending.push(slot);
@@ -849,6 +867,13 @@ impl BatchedNetSelfPlay {
     /// Drain finished games' corpus lines (one JSON line per recorded decision).
     fn drain(&mut self) -> Vec<String> {
         std::mem::take(&mut self.finished)
+    }
+
+    /// Drain finished games' terminal observations (one JSON line per game; empty unless the
+    /// pool was built with `summaries=True`). Same schema as `Game.observation()` — the
+    /// `scores` array carries the full breakdown (crowns, harmony, middle kingdom, largest).
+    fn drain_summaries(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.finished_summaries)
     }
 
     fn done(&self) -> bool {

@@ -390,5 +390,6 @@ fn kingdomino(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(domino_table, m)?)?;
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(mcts::selfplay_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(mcts::rollout_summaries, m)?)?;
     Ok(())
 }

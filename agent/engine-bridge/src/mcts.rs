@@ -422,3 +422,88 @@ pub fn selfplay_batch(
             .collect()
     })
 }
+
+/// Play one rollout-MCTS self-play game to terminal (no corpus recording) and return the
+/// terminal observation JSON — the board-quality summary path.
+#[allow(clippy::too_many_arguments)]
+fn rollout_game_summary(
+    seed: u64,
+    players: u8,
+    variants: Variants,
+    n_sims: u32,
+    c_puct: f32,
+    temp_moves: u32,
+    alpha: f32,
+    eps: f32,
+) -> String {
+    let mut gs = new_game_with(players, variants);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5BA5_E5ED);
+    let mut buf: Vec<Action> = Vec::new();
+    let mut mv = 0u32;
+    loop {
+        match current_decision(&gs) {
+            Decision::Terminal => break,
+            Decision::Chance => {
+                apply_chance(&mut gs, &mut rng);
+            }
+            Decision::Player(_) => {
+                legal_actions(&gs, &mut buf);
+                if buf.len() <= 1 {
+                    if buf.len() == 1 {
+                        apply_action(&mut gs, buf[0]); // forced
+                    }
+                    continue;
+                }
+                let policy = run_mcts(&gs, n_sims, c_puct, alpha, eps, &mut rng);
+                let temperature = if mv < temp_moves { 1.0 } else { 0.0 };
+                let a = select_action(&policy, temperature, &mut rng);
+                apply_action(&mut gs, buf[a]);
+                mv += 1;
+            }
+        }
+    }
+    crate::obs_json(&gs)
+}
+
+/// Play `n_games` rollout-MCTS self-play games in parallel and return each game's terminal
+/// observation JSON (same schema as `Game.observation()`; `scores` carries the breakdown).
+/// No corpus records — this is the board-quality analysis path. Releases the GIL.
+#[pyfunction]
+#[pyo3(signature = (n_games, players, n_sims, c_puct=1.5, temp_moves=12, dirichlet_alpha=0.3,
+                    noise_eps=0.25, seed=0, harmony=true, middle_kingdom=true))]
+#[allow(clippy::too_many_arguments)]
+pub fn rollout_summaries(
+    py: Python<'_>,
+    n_games: usize,
+    players: u8,
+    n_sims: u32,
+    c_puct: f32,
+    temp_moves: u32,
+    dirichlet_alpha: f32,
+    noise_eps: f32,
+    seed: u64,
+    harmony: bool,
+    middle_kingdom: bool,
+) -> Vec<String> {
+    let variants = Variants {
+        harmony,
+        middle_kingdom,
+    };
+    py.allow_threads(|| {
+        (0..n_games)
+            .into_par_iter()
+            .map(|k| {
+                rollout_game_summary(
+                    game_seed(seed, k),
+                    players,
+                    variants,
+                    n_sims,
+                    c_puct,
+                    temp_moves,
+                    dirichlet_alpha,
+                    noise_eps,
+                )
+            })
+            .collect()
+    })
+}
