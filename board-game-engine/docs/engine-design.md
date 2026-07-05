@@ -329,19 +329,20 @@ a board can earn both, either, or neither.
   spans exactly `GRID` in both axes **and** every cell in it is filled, i.e.
   `filled + 1(castle) == GRID*GRID` (rulebook p.4). Requires zero discards. (No effect on
   legality — an incomplete or gappy kingdom is still legal, just unrewarded.)
-- **Middle Kingdom** (+10): the castle is **centered** — the occupied bounding box spans
-  exactly `GRID` in both axes and the castle sits at its center cell (offset `GRID/2` from
-  each edge of the box). Gaps allowed. Independent of Harmony.
+- **Middle Kingdom** (+10): the castle can be **centered in a `GRID×GRID` window that fully
+  contains the kingdom** — every occupied cell lies within `GRID/2` of the castle on both
+  axes. The kingdom need not span the full grid. Gaps allowed. Independent of Harmony.
 
 Variant toggles live in a small `Rules`/config carried alongside (or as `const` features
 for the target build); the target enables both Harmony and Middle Kingdom.
 
-> **Q5 — variant bonus definitions — RESOLVED (2026-06-07).** Both bonuses are additive,
-> never constraints. The geometric tests are the bounding-box readings above: **Harmony** =
-> a complete gap-free `GRID×GRID` (`filled == GRID²−1`); **Middle Kingdom** = the castle is
-> the center of a full `GRID×GRID` bounding box (extends `GRID/2` in every direction, gaps
-> allowed). A kingdom whose footprint is smaller than `GRID×GRID` earns neither — consistent
-> with "complete grid" / "centered in the grid". Implemented and tested in `rules/score.rs`.
+> **Q5 — variant bonus definitions — RESOLVED (2026-06-07, Middle Kingdom loosened
+> 2026-07-05).** Both bonuses are additive, never constraints. **Harmony** = a complete
+> gap-free `GRID×GRID` (`filled == GRID²−1`). **Middle Kingdom** = the castle is centerable
+> in *a* `GRID×GRID` window containing the whole kingdom (every occupied cell within
+> `GRID/2` of the castle on both axes) — an under-sized kingdom with a physically centered
+> castle qualifies. The original resolution required a full `GRID×GRID` footprint; that
+> reading was reversed 2026-07-05. Implemented and tested in `rules/score.rs`.
 
 ### 7.1 Terminal value
 

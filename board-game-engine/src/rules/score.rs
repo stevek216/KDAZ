@@ -103,15 +103,16 @@ fn is_complete_grid(board: &Board) -> bool {
     board.filled as usize == GRID * GRID - 1
 }
 
-/// Middle Kingdom: the castle (always stored at `CENTER`) sits exactly in the middle of the
-/// occupied bounding box — i.e. the kingdom extends `GRID/2` in every direction from it (the
-/// box is a full `GRID×GRID` with the castle dead center). Gaps inside are allowed.
+/// Middle Kingdom: the castle (always stored at `CENTER`) can be centered in **a** `GRID×GRID`
+/// window that fully contains the kingdom — i.e. every occupied cell lies within `GRID/2` of
+/// the castle on both axes. The kingdom does NOT need to span the full grid (decided
+/// 2026-07-05, loosening the original full-span reading); gaps are allowed.
 fn is_castle_centered(board: &Board) -> bool {
     let half = (GRID / 2) as u8;
-    board.min_r == CENTER - half
-        && board.max_r == CENTER + half
-        && board.min_c == CENTER - half
-        && board.max_c == CENTER + half
+    board.min_r >= CENTER - half
+        && board.max_r <= CENTER + half
+        && board.min_c >= CENTER - half
+        && board.max_c <= CENTER + half
 }
 
 #[cfg(test)]
@@ -210,6 +211,46 @@ mod tests {
             "off-center castle earns no Middle Kingdom"
         );
         assert_eq!(s.harmony, 0);
+    }
+
+    #[test]
+    fn middle_kingdom_does_not_require_a_full_span() {
+        // A small kingdom (one square each side of the castle) fits centered in a 7×7
+        // window -> +10 even though the footprint is nowhere near GRID×GRID.
+        let mut b = Board::with_castle();
+        b.place_square(CENTER, CENTER - 1, Terrain::Wheat, 0);
+        b.place_square(CENTER, CENTER + 1, Terrain::Wheat, 0);
+        let s = score_board(&b, Variants::MIGHTY_DUEL);
+        assert_eq!(
+            s.middle_kingdom, 10,
+            "small centered kingdom earns Middle Kingdom"
+        );
+        assert_eq!(s.harmony, 0, "but not Harmony (incomplete grid)");
+
+        // Asymmetric but still within CENTER±GRID/2 on every side -> a centered 7×7 window
+        // containing the whole kingdom exists -> +10.
+        let mut asym = Board::with_castle();
+        let half = (GRID / 2) as u8;
+        for k in 1..=half {
+            asym.place_square(CENTER, CENTER + k, Terrain::Wheat, 0);
+        }
+        asym.place_square(CENTER, CENTER - 1, Terrain::Wheat, 0);
+        let s2 = score_board(&asym, Variants::MIGHTY_DUEL);
+        assert_eq!(
+            s2.middle_kingdom, 10,
+            "within ±GRID/2 of the castle on every side"
+        );
+
+        // One square past the window (GRID/2 + 1 away) -> impossible to center -> 0.
+        let mut wide = Board::with_castle();
+        for k in 1..=(half + 1) {
+            wide.place_square(CENTER, CENTER + k, Terrain::Wheat, 0);
+        }
+        let s3 = score_board(&wide, Variants::MIGHTY_DUEL);
+        assert_eq!(
+            s3.middle_kingdom, 0,
+            "cell beyond the castle-centered window"
+        );
     }
 
     #[test]
