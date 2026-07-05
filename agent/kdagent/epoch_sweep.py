@@ -70,6 +70,8 @@ def main():
     ap.add_argument("--harmony", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--json-out", dest="json_out", default=None,
+                    help="also write the sweep results as JSON (for the training loop)")
     args = ap.parse_args()
 
     checkpoints = find_epoch_checkpoints(args.prefix)
@@ -90,8 +92,21 @@ def main():
     print("\nepoch   sims   win%    +/-      n  verdict")
     for epoch, sims, mean, ci, n, verdict in results:
         print(f"{epoch:5d}  {sims:5d}  {mean * 100:5.1f}  {ci * 100:5.1f}  {n:5d}  {verdict}")
-    best_epoch, best_sims, best_mean, *_ = max(results, key=lambda r: r[2])
-    print(f"\nbest: epoch {best_epoch}, sims {best_sims} ({best_mean * 100:.1f}%)")
+    best = max(results, key=lambda r: r[2])
+    print(f"\nbest: epoch {best[0]}, sims {best[1]} ({best[2] * 100:.1f}%)")
+
+    if args.json_out:
+        import json
+        keys = ("epoch", "sims", "mean", "ci", "n", "verdict")
+        payload = {
+            "prefix": args.prefix,
+            "opponent": args.opponent,
+            "results": [dict(zip(keys, r)) for r in results],
+            "best": dict(zip(keys, best)),
+        }
+        with open(args.json_out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        print(f"wrote {args.json_out}")
 
 
 if __name__ == "__main__":

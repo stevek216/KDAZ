@@ -52,7 +52,14 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   MCTS). Win-rate + 95% CI + verdict. Tested (`kdagent/test_arena.py`): scores sum to 1, and
   **mcts:64 beats random 100%**. e.g.
   `python -m kdagent.arena --a netmcts:64:runs/net.best.pt --b mcts:64 --games 200 --device cuda`.
-- **TODO** — the closed generate→train→evaluate→promote loop. Root determinization (PIMC) later.
+- **DONE — training loop** (`kdagent/loop.py`): the closed generate→train→evaluate→promote
+  cycle. Per attempt: netbatch-overlap self-play from the champion, train a fresh candidate
+  on the most recent 2 corpora (per-epoch checkpoints), epoch-sweep vs the champion in the
+  batched arena, and promote iff the win-rate lower confidence bound clears 50%. Resumable
+  (`runs/loop_state.json`), Ctrl+C prints standings, `--notify URL` pings when done (ntfy.sh).
+  `--gens N` stops after N promotions; default runs until `--max-fails` (3) consecutive
+  failures. e.g. `python -m kdagent.loop --device cuda --notify https://ntfy.sh/my-topic`.
+- **TODO** — root determinization (PIMC) for competitive hidden-info play.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,
 then `maturin develop --release` in `engine-bridge/`.

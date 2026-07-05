@@ -80,7 +80,8 @@ def evaluate(net, records, batch_size, pc, value_coef, device):
 
 def main():
     ap = argparse.ArgumentParser(description="Train KingdominoNet on a self-play corpus.")
-    ap.add_argument("--corpus", required=True, help="training JSONL corpus")
+    ap.add_argument("--corpus", required=True, nargs="+",
+                    help="training JSONL corpus (multiple paths concatenate, e.g. a replay window)")
     ap.add_argument("--test", default=None, help="eval corpus; if omitted, hold out --val-frac")
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--epochs", type=int, default=5)
@@ -105,7 +106,11 @@ def main():
     torch.manual_seed(args.seed)
 
     print("loading corpus...", flush=True)
-    records = load_corpus(args.corpus, limit=args.limit)
+    records = []
+    for path in args.corpus:
+        records += load_corpus(path, limit=args.limit)
+    if args.limit:
+        records = records[: args.limit]
     if args.test:
         train_recs, test_recs = records, load_corpus(args.test)
     else:
