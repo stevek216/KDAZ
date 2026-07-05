@@ -309,7 +309,7 @@ impl GameSearch {
             players: pc,
             variants,
             sims_by_agent: [sims_a, sims_b],
-            cur_target: sims_a.max(1),
+            cur_target: sims_a,
             cur_raw: false,
             c_puct,
             temp_moves,
@@ -382,11 +382,13 @@ impl GameSearch {
                         self.sims_done = 0;
                         self.has_tree = true;
                         self.root_noised = false;
-                        // The mover's agent picks this move's sim budget (0 sims = raw net: just
-                        // expand the root and play argmax(priors), which needs 1 net eval).
+                        // The mover's agent picks this move's sim budget: the root expansion
+                        // eval is not a simulation, so `n_sims=N` = N true descents (matching
+                        // the Python/rollout searches). 0 sims = raw net: expand the root and
+                        // play argmax(priors).
                         let s = self.sims_by_agent[self.seat_agent[self.gs.to_act as usize]];
                         self.cur_raw = s == 0;
-                        self.cur_target = s.max(1);
+                        self.cur_target = s;
                         return true;
                     }
                 }
@@ -470,7 +472,7 @@ impl GameSearch {
         }
         self.arena[leaf].value = absval;
         self.arena[leaf].expanded = true;
-        if leaf == self.root && !self.root_noised && self.eps > 0.0 {
+        if leaf == self.root && !self.root_noised && self.alpha > 0.0 && self.eps > 0.0 {
             add_dirichlet(&mut self.arena[leaf], self.alpha, self.eps, &mut self.rng);
             self.root_noised = true;
         }
@@ -482,7 +484,11 @@ impl GameSearch {
                 *w += *x;
             }
         }
-        self.sims_done += 1;
+        // The root's own expansion (empty path) is not a simulation — only true descents
+        // count, so `n_sims=N` yields N root visits like the Python/rollout searches.
+        if !path.is_empty() {
+            self.sims_done += 1;
+        }
         self.pending_leaf = -1;
     }
 
@@ -576,7 +582,9 @@ impl GameSearch {
                 self.finalize();
                 return Step::Over;
             }
-            if self.sims_done >= self.cur_target {
+            // Commit only once the root is expanded (its eval doesn't count as a sim); with
+            // a raw-net agent (target 0) that single root eval is all the move needs.
+            if self.arena[self.root].expanded && self.sims_done >= self.cur_target {
                 self.commit_move();
                 continue;
             }
@@ -752,7 +760,14 @@ impl BatchedNetSelfPlay {
         harmony: bool,
         middle_kingdom: bool,
         summaries: bool,
-    ) -> Self {
+    ) -> PyResult<Self> {
+        if n_sims == 0 {
+            // Raw-net play has no visit counts: every recorded policy target would be
+            // uniform noise. Corpus generation requires real search.
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "BatchedNetSelfPlay requires n_sims >= 1 (n_sims=0 would record uniform policy targets)",
+            ));
+        }
         let variants = Variants {
             harmony,
             middle_kingdom,
@@ -777,7 +792,7 @@ impl BatchedNetSelfPlay {
                 )
             })
             .collect();
-        BatchedNetSelfPlay {
+        Ok(BatchedNetSelfPlay {
             games,
             pending: Vec::new(),
             finished: Vec::new(),
@@ -788,7 +803,7 @@ impl BatchedNetSelfPlay {
             prof_pump: 0.0,
             prof_encode: 0.0,
             prof_calls: 0,
-        }
+        })
     }
 
     /// `(pump_ms, encode_ms)` accumulated across all `collect` calls — the engine-side cost split
