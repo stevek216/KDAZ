@@ -40,8 +40,12 @@ def _select_move(policy: np.ndarray, temperature: float, rng: np.random.Generato
 
 
 def play_game(evaluator, n_sims, players, seed, c_puct, temperature, rng,
-              harmony=True, middle_kingdom=True):
-    """Play one self-play game; return (records_without_value, value_vector, n_decisions)."""
+              harmony=True, middle_kingdom=True, temp_moves=12):
+    """Play one self-play game; return (records_without_value, value_vector, n_decisions).
+
+    Matches the Rust backends' conventions: forced single-action plies are applied without
+    search or a corpus record, and moves are sampled at `temperature` only for the first
+    `temp_moves` real decisions (argmax after)."""
     g = kd.Game(seed, players, harmony, middle_kingdom)
     mcts = MCTS(evaluator, n_sims=n_sims, c_puct=c_puct, seed=seed)
     records = []
@@ -52,12 +56,16 @@ def play_game(evaluator, n_sims, players, seed, c_puct, temperature, rng,
         if g.is_chance():
             g.apply_chance()
             continue
+        if g.num_actions() == 1:
+            g.apply(0)  # forced — no search, no record (mirrors the Rust backends)
+            continue
         obs = json.loads(g.observation())
         legal = json.loads(g.legal_actions())
         policy, _, _ = mcts.run(g, add_noise=True)
+        temp = temperature if len(records) < temp_moves else 0.0
         records.append({"obs": obs, "legal": legal, "policy": policy.tolist(),
                         "to_act": g.to_act()})
-        g.apply(_select_move(policy, temperature, rng))
+        g.apply(_select_move(policy, temp, rng))
     value = [float(x) for x in g.terminal_value()]
     for r in records:
         r["value"] = value
@@ -98,7 +106,7 @@ def run_python(args):
         for gi in range(args.games):
             records, value, n_dec = play_game(
                 evaluator, args.sims, args.players, args.seed + gi, args.c_puct,
-                args.temperature, rng, args.harmony, args.middle_kingdom)
+                args.temperature, rng, args.harmony, args.middle_kingdom, args.temp_moves)
             total += n_dec
             if writer is not None:
                 for r in records:
@@ -428,9 +436,10 @@ def main():
     ap.add_argument("--ckpt", default=None, help="net checkpoint (python --evaluator net)")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--c-puct", dest="c_puct", type=float, default=1.5)
-    ap.add_argument("--temperature", type=float, default=1.0, help="python backend move temp")
+    ap.add_argument("--temperature", type=float, default=1.0,
+                    help="python backend: sampling temp for the first --temp-moves decisions")
     ap.add_argument("--temp-moves", dest="temp_moves", type=int, default=12,
-                    help="rust backend: first N moves sampled at temperature 1, then greedy")
+                    help="first N real decisions sampled (T=1 on rust backends), then greedy")
     ap.add_argument("--dirichlet-alpha", dest="dirichlet_alpha", type=float, default=0.3)
     ap.add_argument("--noise-eps", dest="noise_eps", type=float, default=0.25)
     ap.add_argument("--harmony", action=argparse.BooleanOptionalAction, default=True)
