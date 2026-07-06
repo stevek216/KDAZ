@@ -16,6 +16,10 @@ import torch
 
 from .encoder import A_CLAIM, A_PLACE, N_PLANES, STORE, encode_obs
 
+# Final scores are divided by this for the auxiliary score-head target (keeps the Huber
+# loss in a sane range; typical totals run ~40-160).
+SCORE_SCALE = 50.0
+
 
 def load_corpus(path: str, limit: int | None = None) -> list[dict]:
     recs = []
@@ -41,13 +45,16 @@ class Batch:
     a_mask: torch.Tensor     # [B, Amax] bool, real (non-pad) action
     policy: torch.Tensor     # [B, Amax] float32, MCTS visit-distribution target (0 in pad)
     value_rel: torch.Tensor  # [B, pc] float32, seat-relative outcome target (self first)
+    score_rel: torch.Tensor  # [B, pc] float32, seat-relative final score / SCORE_SCALE (0 if absent)
+    score_mask: torch.Tensor  # [B] bool, record carried final scores (old corpora: False)
     pc: int
 
     def to(self, device) -> "Batch":
         return Batch(
             self.board.to(device), self.lines.to(device), self.glob.to(device),
             self.a_type.to(device), self.a_pidx.to(device), self.a_ltok.to(device),
-            self.a_mask.to(device), self.policy.to(device), self.value_rel.to(device), self.pc,
+            self.a_mask.to(device), self.policy.to(device), self.value_rel.to(device),
+            self.score_rel.to(device), self.score_mask.to(device), self.pc,
         )
 
     def __len__(self) -> int:
@@ -57,7 +64,7 @@ class Batch:
 def collate(records: list[dict], table=None, pc: int = 2) -> Batch:
     """Encode + pad a list of corpus records into a `Batch`. Records whose player count differs
     from `pc` are skipped (the net is built for one player count)."""
-    encs, pols, vals, toacts = [], [], [], []
+    encs, pols, vals, toacts, scores = [], [], [], [], []
     for r in records:
         enc = encode_obs(r["obs"], r["legal"], table)
         if enc.player_count != pc:
@@ -66,6 +73,7 @@ def collate(records: list[dict], table=None, pc: int = 2) -> Batch:
         pols.append(np.asarray(r["policy"], dtype=np.float32))
         vals.append(np.asarray(r["value"], dtype=np.float32))
         toacts.append(r["to_act"])
+        scores.append(r.get("scores"))  # None for pre-score-target corpora
     if not encs:
         raise ValueError(f"no records with player_count == {pc}")
 
@@ -84,6 +92,8 @@ def collate(records: list[dict], table=None, pc: int = 2) -> Batch:
     a_mask = np.zeros((b, amax), dtype=bool)
     policy = np.zeros((b, amax), dtype=np.float32)
     value_rel = np.zeros((b, pc), dtype=np.float32)
+    score_rel = np.zeros((b, pc), dtype=np.float32)
+    score_mask = np.zeros(b, dtype=bool)
 
     for i, enc in enumerate(encs):
         board[i] = enc.board.reshape(pc * c, STORE, STORE)
@@ -101,9 +111,14 @@ def collate(records: list[dict], table=None, pc: int = 2) -> Batch:
         ta = toacts[i]
         for k in range(pc):
             value_rel[i, k] = vals[i][(ta + k) % pc]
+        if scores[i] is not None:
+            for k in range(pc):
+                score_rel[i, k] = scores[i][(ta + k) % pc] / SCORE_SCALE
+            score_mask[i] = True
 
     return Batch(
         torch.from_numpy(board), torch.from_numpy(lines), torch.from_numpy(glob),
         torch.from_numpy(a_type), torch.from_numpy(a_pidx), torch.from_numpy(a_ltok),
-        torch.from_numpy(a_mask), torch.from_numpy(policy), torch.from_numpy(value_rel), pc,
+        torch.from_numpy(a_mask), torch.from_numpy(policy), torch.from_numpy(value_rel),
+        torch.from_numpy(score_rel), torch.from_numpy(score_mask), pc,
     )

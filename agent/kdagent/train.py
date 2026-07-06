@@ -34,17 +34,26 @@ def gather_logits(place_map, claim_logits, discard, batch: Batch) -> torch.Tenso
     return logits.masked_fill(~batch.a_mask, float("-inf"))
 
 
-def losses(net: KingdominoNet, batch: Batch, value_coef: float):
-    """Return (total, policy_ce, value_ce, top1_acc)."""
-    place_map, claim_logits, discard, value = net.forward_batch(batch.board, batch.lines, batch.glob)
+def losses(net: KingdominoNet, batch: Batch, value_coef: float, score_coef: float = 0.0):
+    """Return (total, policy_ce, value_ce, score_huber, top1_acc)."""
+    place_map, claim_logits, discard, value, score = net.forward_batch(
+        batch.board, batch.lines, batch.glob, with_score=True)
     logits = gather_logits(place_map, claim_logits, discard, batch)
     logp = torch.nan_to_num(torch.log_softmax(logits, dim=1), neginf=0.0)  # -inf·0 -> 0
     ploss = -(batch.policy * logp).sum(dim=1).mean()
     logv = torch.log_softmax(value[:, : batch.pc], dim=1)
     vloss = -(batch.value_rel * logv).sum(dim=1).mean()
+    # Auxiliary score target: only records that carry final scores (old corpora don't).
+    if score_coef > 0 and bool(batch.score_mask.any()):
+        m = batch.score_mask
+        sloss = torch.nn.functional.smooth_l1_loss(
+            score[:, : batch.pc][m], batch.score_rel[m])
+    else:
+        sloss = torch.zeros((), device=batch.board.device)
     with torch.no_grad():
         acc = (logits.argmax(1) == batch.policy.argmax(1)).float().mean()
-    return ploss + value_coef * vloss, ploss.detach(), vloss.detach(), acc
+    total = ploss + value_coef * vloss + score_coef * sloss
+    return total, ploss.detach(), vloss.detach(), sloss.detach(), acc
 
 
 def iter_batches(records, batch_size, pc, rng, shuffle):
@@ -60,22 +69,23 @@ def iter_batches(records, batch_size, pc, rng, shuffle):
 
 
 @torch.no_grad()
-def evaluate(net, records, batch_size, pc, value_coef, device):
+def evaluate(net, records, batch_size, pc, value_coef, device, score_coef=0.0):
     net.eval()
-    tot = pl = vl = ac = 0.0
+    tot = pl = vl = sl = ac = 0.0
     n = 0
     for batch in iter_batches(records, batch_size, pc, None, shuffle=False):
         batch = batch.to(device)
-        _, p, v, a = losses(net, batch, value_coef)
+        _, p, v, sc, a = losses(net, batch, value_coef, score_coef)
         bs = len(batch)
-        tot += (p.item() + value_coef * v.item()) * bs
+        tot += (p.item() + value_coef * v.item() + score_coef * sc.item()) * bs
         pl += p.item() * bs
         vl += v.item() * bs
+        sl += sc.item() * bs
         ac += a.item() * bs
         n += bs
     net.train()
     n = max(n, 1)
-    return tot / n, pl / n, vl / n, ac / n
+    return tot / n, pl / n, vl / n, sl / n, ac / n
 
 
 def main():
@@ -89,6 +99,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", dest="weight_decay", type=float, default=1e-4)
     ap.add_argument("--value-coef", dest="value_coef", type=float, default=1.0)
+    ap.add_argument("--score-coef", dest="score_coef", type=float, default=0.5,
+                    help="weight of the auxiliary final-score head loss (0 = off; needs a "
+                         "corpus with per-record 'scores')")
     ap.add_argument("--players", type=int, default=2, help="net player count (corpus must match)")
     ap.add_argument("--ch", type=int, default=64, help="conv width")
     ap.add_argument("--board-blocks", dest="board_blocks", type=int, default=3)
@@ -114,10 +127,23 @@ def main():
     if args.test:
         train_recs, test_recs = records, load_corpus(args.test)
     else:
+        # Split by GAME, not record: sibling records share the outcome/score labels, so a
+        # per-record split leaks them into val and val loss rewards memorization.
+        games: dict = {}
+        for i, r in enumerate(records):
+            games.setdefault(r.get("game", f"_solo{i}"), []).append(i)
+        keys = list(games)
+        rng.shuffle(keys)
         n_val = max(1, int(len(records) * args.val_frac))
-        perm = rng.permutation(len(records))
-        test_recs = [records[i] for i in perm[:n_val]]
-        train_recs = [records[i] for i in perm[n_val:]]
+        val_idx: set = set()
+        for k in keys:
+            if len(val_idx) >= n_val:
+                break
+            val_idx.update(games[k])
+        test_recs = [records[i] for i in sorted(val_idx)]
+        train_recs = [records[i] for i in range(len(records)) if i not in val_idx]
+        print(f"game-level split: {len(games):,} games -> {len(test_recs):,} val records",
+              flush=True)
     print(f"train: {len(train_recs):,} | test: {len(test_recs):,} | batch {args.batch_size} "
           f"| device {device}", flush=True)
 
@@ -141,7 +167,7 @@ def main():
         for batch in iter_batches(train_recs, args.batch_size, args.players, rng, shuffle=True):
             batch = batch.to(device)
             opt.zero_grad()
-            loss, p, v, a = losses(net, batch, args.value_coef)
+            loss, p, v, sc, a = losses(net, batch, args.value_coef, args.score_coef)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
             opt.step()
@@ -149,14 +175,14 @@ def main():
             steps += 1
         train_loss = run / max(steps, 1)
 
-        val, vp, vv, va = evaluate(net, test_recs, args.batch_size, args.players,
-                                   args.value_coef, device)
+        val, vp, vv, vs, va = evaluate(net, test_recs, args.batch_size, args.players,
+                                       args.value_coef, device, args.score_coef)
         dt = time.time() - t0
         is_best = val < best
         if is_best:
             best, best_epoch = val, epoch
         print(f"epoch {epoch}: train {train_loss:.4f} | val {val:.4f} "
-              f"(policy {vp:.4f} value {vv:.4f} top1 {va:.3f}) | {dt:.1f}s"
+              f"(policy {vp:.4f} value {vv:.4f} score {vs:.4f} top1 {va:.3f}) | {dt:.1f}s"
               + ("  <- best" if is_best else ""), flush=True)
 
         ckpt = {"model": net.state_dict(), "net_cfg": cfg, "epoch": epoch, "val": val,

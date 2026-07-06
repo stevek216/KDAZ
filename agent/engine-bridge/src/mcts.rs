@@ -19,6 +19,7 @@ use kingdomino_engine::core::{
     apply_action, apply_chance, chance_outcomes, current_decision, legal_actions, new_game_with,
     terminal_value, Action, Decision, GameState, Variants, MAX_PLAYERS,
 };
+use kingdomino_engine::rules::score_board;
 
 type Value = [f32; MAX_PLAYERS];
 
@@ -361,16 +362,24 @@ fn selfplay_game(
     }
 
     let outcome = terminal_value(&gs).unwrap_or([0.0; MAX_PLAYERS]);
+    // Final per-seat score totals (auxiliary value target) + the per-game seed as a game id
+    // (unique within and across corpora) — matches the batched-net writer's schema.
+    let totals: Vec<u32> = (0..gs.player_count as usize)
+        .map(|s| score_board(&gs.boards[s], gs.variants).total)
+        .collect();
+    let scores = serde_json::to_string(&totals).unwrap();
     recs.into_iter()
         .map(|r| {
             let value: Vec<f32> = outcome[..r.pc].to_vec(); // absolute per-seat outcome
             format!(
-                "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{}}}",
+                "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{},\"scores\":{},\"game\":{}}}",
                 r.obs,
                 r.legal,
                 serde_json::to_string(&r.policy).unwrap(),
                 r.to_act,
                 serde_json::to_string(&value).unwrap(),
+                scores,
+                seed,
             )
         })
         .collect()

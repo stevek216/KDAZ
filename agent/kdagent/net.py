@@ -39,6 +39,12 @@ class KingdominoNet(nn.Module):
         self.value_head = nn.Sequential(
             nn.Linear(3 * ch, ch), nn.GELU(), nn.Linear(ch, player_count)
         )
+        # Auxiliary TRAINING head only (never queried at play time): predicted per-seat final
+        # score / SCORE_SCALE, seat-relative like the value head. A dense, low-variance target
+        # that regularizes the trunk against memorizing binary outcomes (KataGo-style).
+        self.score_head = nn.Sequential(
+            nn.Linear(3 * ch, ch), nn.GELU(), nn.Linear(ch, player_count)
+        )
 
     @staticmethod
     def _line_feats() -> int:
@@ -60,9 +66,11 @@ class KingdominoNet(nn.Module):
         value_logits = self.value_head(summary)  # [pc]
         return place_map, claim_logits, discard_logit, value_logits
 
-    def forward_batch(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor):
+    def forward_batch(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor,
+                      with_score: bool = False):
         """Batched heads for training. board [B, pc·C, 13, 13], lines [B, 8, F], glob [B, G]
-        -> place_map [B, 4, 13, 13], claim_logits [B, 8], discard [B], value [B, pc]."""
+        -> place_map [B, 4, 13, 13], claim_logits [B, 8], discard [B], value [B, pc]
+        (+ score [B, pc] when `with_score` — training only; inference callers stay 4-tuple)."""
         feat = self.board_conv(board)  # [B, ch, 13, 13]
         place_map = self.place_head(feat)  # [B, 4, 13, 13]
         board_pool = feat.mean(dim=(2, 3))  # [B, ch]
@@ -73,6 +81,8 @@ class KingdominoNet(nn.Module):
         summary = torch.cat([board_pool, line_pool, glob_emb], dim=-1)  # [B, 3·ch]
         discard = self.discard_head(summary).squeeze(-1)  # [B]
         value = self.value_head(summary)  # [B, pc]
+        if with_score:
+            return place_map, claim_logits, discard, value, self.score_head(summary)
         return place_map, claim_logits, discard, value
 
     def policy_value(self, enc, device: str = "cpu"):
@@ -110,5 +120,9 @@ def load_net(path, device="cpu"):
     cfg = ck.get("net_cfg", {}) if isinstance(ck, dict) else {}
     net = KingdominoNet(**cfg).to(device)
     sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-    net.load_state_dict(sd)
+    # Older checkpoints predate the auxiliary score head; it stays at init (training-only).
+    missing, unexpected = net.load_state_dict(sd, strict=False)
+    assert not unexpected, f"unexpected keys in checkpoint: {unexpected}"
+    bad = [k for k in missing if not k.startswith("score_head.")]
+    assert not bad, f"checkpoint missing non-score-head keys: {bad}"
     return net.eval(), ck

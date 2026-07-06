@@ -30,7 +30,12 @@ def test_collate_shapes_and_targets():
     assert np.allclose(batch.value_rel.sum(dim=1).numpy(), 1.0, atol=1e-4)
     # pad slots are masked and carry no policy mass.
     assert torch.all(batch.policy[~batch.a_mask] == 0)
-    print(f"  collate: batch of {b}, shapes + targets OK")
+    # score targets: rust corpora carry per-record final scores + a game id.
+    assert bool(batch.score_mask.all()), "rust corpus records should all carry scores"
+    assert batch.score_rel.shape == (b, 2)
+    assert torch.all(batch.score_rel >= 0) and torch.all(batch.score_rel < 10)
+    assert all("game" in r for r in recs[:32])
+    print(f"  collate: batch of {b}, shapes + targets (incl. scores/game) OK")
 
 
 def test_overfit_one_batch():
@@ -39,15 +44,19 @@ def test_overfit_one_batch():
     batch = collate(recs[:64], pc=2)
     net = KingdominoNet(player_count=2, ch=16, board_blocks=2)
     opt = torch.optim.Adam(net.parameters(), lr=2e-3)
-    init = float(losses(net, batch, value_coef=1.0)[0])
+    init = float(losses(net, batch, value_coef=1.0, score_coef=0.5)[0])
+    init_score = float(losses(net, batch, value_coef=1.0, score_coef=0.5)[3])
     for _ in range(80):
         opt.zero_grad()
-        loss, _, _, _ = losses(net, batch, value_coef=1.0)
+        loss, _, _, _, _ = losses(net, batch, value_coef=1.0, score_coef=0.5)
         loss.backward()
         opt.step()
-    final = float(losses(net, batch, value_coef=1.0)[0])
+    final = float(losses(net, batch, value_coef=1.0, score_coef=0.5)[0])
+    final_score = float(losses(net, batch, value_coef=1.0, score_coef=0.5)[3])
     assert final < 0.85 * init, f"overfit should reduce loss: {init:.3f} -> {final:.3f}"
-    print(f"  overfit: loss {init:.3f} -> {final:.3f} OK")
+    assert final_score < init_score, "score head should learn on an overfit batch"
+    print(f"  overfit: loss {init:.3f} -> {final:.3f} (score {init_score:.3f} -> "
+          f"{final_score:.3f}) OK")
 
 
 def test_checkpoint_roundtrip():

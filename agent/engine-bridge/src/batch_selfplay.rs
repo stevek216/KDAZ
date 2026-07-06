@@ -22,7 +22,7 @@ use kingdomino_engine::core::{
     apply_action, apply_chance, chance_outcomes, current_decision, legal_actions, new_game_with,
     terminal_value, Action, Decision, GameState, Phase, Variants, MAX_PLAYERS,
 };
-use kingdomino_engine::rules::cell_of;
+use kingdomino_engine::rules::{cell_of, score_board};
 
 use kingdomino_features::encoder;
 
@@ -533,11 +533,18 @@ impl GameSearch {
         if self.record {
             let value: Vec<f32> = outcome[..pc].to_vec();
             let val = serde_json::to_string(&value).unwrap();
+            // Final per-seat score totals (the dense auxiliary value target) and a game id
+            // (the per-game seed — unique within and across corpora) for game-level splits.
+            let totals: Vec<u32> = (0..pc)
+                .map(|s| score_board(&self.gs.boards[s], self.gs.variants).total)
+                .collect();
+            let scores = serde_json::to_string(&totals).unwrap();
+            let game = game_seed(self.base_seed, self.game_index);
             for i in 0..self.rec_obs.len() {
                 let pol = serde_json::to_string(&self.rec_policy[i]).unwrap();
                 self.out_lines.push(format!(
-                    "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{}}}",
-                    self.rec_obs[i], self.rec_legal[i], pol, self.rec_toact[i], val
+                    "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{},\"scores\":{},\"game\":{}}}",
+                    self.rec_obs[i], self.rec_legal[i], pol, self.rec_toact[i], val, scores, game
                 ));
             }
             self.rec_obs.clear();
