@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .dataset import Batch, collate, load_corpus
+from .dataset import Batch, Corpora
 from .encoder import A_CLAIM, A_PLACE
 from .net import KingdominoNet, load_net
 
@@ -56,24 +56,27 @@ def losses(net: KingdominoNet, batch: Batch, value_coef: float, score_coef: floa
     return total, ploss.detach(), vloss.detach(), sloss.detach(), acc
 
 
-def iter_batches(records, batch_size, pc, rng, shuffle):
-    idx = np.arange(len(records))
+def iter_batches(corpora, indices, batch_size, pc, rng, shuffle):
+    """Yield minibatches over `indices` (positions into `corpora`)."""
+    idx = np.array(indices, dtype=np.int64, copy=True)
     if shuffle:
         rng.shuffle(idx)
     for s in range(0, len(idx), batch_size):
-        chunk = [records[j] for j in idx[s : s + batch_size]]
+        chunk = idx[s : s + batch_size]
+        if len(chunk) == 0:
+            continue
         try:
-            yield collate(chunk, pc=pc)
+            yield corpora.batch(chunk, pc=pc)
         except ValueError:
             continue  # a batch with no matching-pc records (rare); skip
 
 
 @torch.no_grad()
-def evaluate(net, records, batch_size, pc, value_coef, device, score_coef=0.0):
+def evaluate(net, corpora, indices, batch_size, pc, value_coef, device, score_coef=0.0):
     net.eval()
     tot = pl = vl = sl = ac = 0.0
     n = 0
-    for batch in iter_batches(records, batch_size, pc, None, shuffle=False):
+    for batch in iter_batches(corpora, indices, batch_size, pc, None, shuffle=False):
         batch = batch.to(device)
         _, p, v, sc, a = losses(net, batch, value_coef, score_coef)
         bs = len(batch)
@@ -91,7 +94,7 @@ def evaluate(net, records, batch_size, pc, value_coef, device, score_coef=0.0):
 def main():
     ap = argparse.ArgumentParser(description="Train KingdominoNet on a self-play corpus.")
     ap.add_argument("--corpus", required=True, nargs="+",
-                    help="training JSONL corpus (multiple paths concatenate, e.g. a replay window)")
+                    help="training corpus (packed .kdc or legacy .jsonl); multiple paths form a replay window")
     ap.add_argument("--test", default=None, help="eval corpus; if omitted, hold out --val-frac")
     ap.add_argument("--val-frac", type=float, default=0.1)
     ap.add_argument("--epochs", type=int, default=5)
@@ -119,33 +122,34 @@ def main():
     torch.manual_seed(args.seed)
 
     print("loading corpus...", flush=True)
-    records = []
-    for path in args.corpus:
-        records += load_corpus(path, limit=args.limit)
-    if args.limit:
-        records = records[: args.limit]
+    corpora = Corpora(args.corpus, limit=args.limit)
     if args.test:
-        train_recs, test_recs = records, load_corpus(args.test)
+        test_corpora = Corpora([args.test])
+        train_idx = np.arange(len(corpora))
+        val_idx = np.arange(len(test_corpora))
     else:
         # Split by GAME, not record: sibling records share the outcome/score labels, so a
         # per-record split leaks them into val and val loss rewards memorization.
-        games: dict = {}
-        for i, r in enumerate(records):
-            games.setdefault(r.get("game", f"_solo{i}"), []).append(i)
-        keys = list(games)
-        rng.shuffle(keys)
-        n_val = max(1, int(len(records) * args.val_frac))
-        val_idx: set = set()
-        for k in keys:
-            if len(val_idx) >= n_val:
-                break
-            val_idx.update(games[k])
-        test_recs = [records[i] for i in sorted(val_idx)]
-        train_recs = [records[i] for i in range(len(records)) if i not in val_idx]
-        print(f"game-level split: {len(games):,} games -> {len(test_recs):,} val records",
+        test_corpora = corpora
+        gids = corpora.game_ids
+        keys, inverse = np.unique(gids, return_inverse=True)
+        order = np.arange(len(keys))
+        rng.shuffle(order)
+        n_val = max(1, int(len(corpora) * args.val_frac))
+        # Take whole games until the val budget is met.
+        counts = np.bincount(inverse, minlength=len(keys))
+        take = np.cumsum(counts[order]) <= n_val
+        if not take.any():
+            take[0] = True
+        val_games = np.zeros(len(keys), dtype=bool)
+        val_games[order[take]] = True
+        is_val = val_games[inverse]
+        val_idx = np.nonzero(is_val)[0]
+        train_idx = np.nonzero(~is_val)[0]
+        print(f"game-level split: {len(keys):,} games -> {len(val_idx):,} val records",
               flush=True)
-    print(f"train: {len(train_recs):,} | test: {len(test_recs):,} | batch {args.batch_size} "
-          f"| device {device}", flush=True)
+    print(f"train: {len(train_idx):,} | test: {len(val_idx):,} | batch {args.batch_size} "
+          f"| device {device} | {'packed' if corpora.packed else 'jsonl'}", flush=True)
 
     cfg = {"player_count": args.players, "ch": args.ch, "board_blocks": args.board_blocks}
     if args.init_from:
@@ -164,7 +168,8 @@ def main():
         net.train()
         t0 = time.time()
         run, steps = 0.0, 0
-        for batch in iter_batches(train_recs, args.batch_size, args.players, rng, shuffle=True):
+        for batch in iter_batches(corpora, train_idx, args.batch_size, args.players, rng,
+                                  shuffle=True):
             batch = batch.to(device)
             opt.zero_grad()
             loss, p, v, sc, a = losses(net, batch, args.value_coef, args.score_coef)
@@ -175,7 +180,7 @@ def main():
             steps += 1
         train_loss = run / max(steps, 1)
 
-        val, vp, vv, vs, va = evaluate(net, test_recs, args.batch_size, args.players,
+        val, vp, vv, vs, va = evaluate(net, test_corpora, val_idx, args.batch_size, args.players,
                                        args.value_coef, device, args.score_coef)
         dt = time.time() - t0
         is_best = val < best

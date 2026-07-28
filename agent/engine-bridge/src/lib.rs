@@ -39,6 +39,7 @@ use kingdomino_engine::rules::{cell_of, score_board};
 
 mod batch_selfplay;
 mod mcts;
+mod train_batch;
 
 use kingdomino_features::encoder; // single-sourced feature encoder (parity-tested)
 
@@ -391,5 +392,7 @@ fn kingdomino(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(mcts::selfplay_batch, m)?)?;
     m.add_function(wrap_pyfunction!(mcts::rollout_summaries, m)?)?;
+    m.add_function(wrap_pyfunction!(train_batch::encode_packed_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(train_batch::packed_record_json, m)?)?;
     Ok(())
 }

@@ -22,6 +22,12 @@ SCORE_SCALE = 50.0
 
 
 def load_corpus(path: str, limit: int | None = None) -> list[dict]:
+    """Load a JSONL corpus into memory as dicts.
+
+    Legacy path, kept for the `.jsonl` debugging form. It costs ~18.4 KiB per record resident,
+    so it cannot hold a real generation — training reads packed corpora through
+    `PackedCorpus` + `collate_packed` instead.
+    """
     recs = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -32,6 +38,129 @@ def load_corpus(path: str, limit: int | None = None) -> list[dict]:
             if limit and len(recs) >= limit:
                 break
     return recs
+
+
+class Corpora:
+    """One or more corpora addressed as a single 0..N index space.
+
+    Packed corpora are memory-mapped, so constructing this over a replay window of several
+    generations is instant and costs no resident memory per record. The legacy JSONL form is
+    still accepted (it loads into dicts) so `.jsonl` debugging corpora keep working, but the
+    two forms cannot be mixed in one window.
+    """
+
+    def __init__(self, paths: list[str], limit: int | None = None):
+        from .corpus import PackedCorpus, is_packed
+
+        flags = [is_packed(p) for p in paths]
+        if any(flags) and not all(flags):
+            raise SystemExit(
+                "cannot mix packed and JSONL corpora in one window; regenerate the odd one out"
+            )
+        self.packed = bool(paths) and all(flags)
+        if self.packed:
+            self.parts = [PackedCorpus(p) for p in paths]
+            sizes = [len(c) for c in self.parts]
+            pcs = {c.player_count for c in self.parts}
+            if len(pcs) > 1:
+                raise SystemExit(f"corpora disagree on player_count: {sorted(pcs)}")
+            self.player_count = self.parts[0].player_count
+        else:
+            self.records: list[dict] = []
+            for p in paths:
+                self.records += load_corpus(p, limit=limit)
+            sizes = [len(self.records)]
+            self.player_count = None
+        self.bounds = np.cumsum([0] + sizes)
+        self.n = int(self.bounds[-1])
+        if limit:
+            self.n = min(self.n, limit)
+
+    def __len__(self) -> int:
+        return self.n
+
+    @property
+    def game_ids(self) -> np.ndarray:
+        """Per-record generating-game id, used to split by game rather than by position.
+
+        Ids from different corpora are not re-salted: a collision would merely force two
+        unrelated games onto the same side of the split, which is conservative — it can never
+        split one game across train and val, which is the leak that matters.
+        """
+        if self.packed:
+            return np.concatenate([c.game_ids for c in self.parts])[: self.n]
+        return np.array(
+            [hash(r.get("game", f"_solo{i}")) for i, r in enumerate(self.records[: self.n])],
+            dtype=np.int64,
+        )
+
+    def batch(self, idx: np.ndarray, pc: int) -> "Batch":
+        """Encode the records at global indices `idx`."""
+        if not self.packed:
+            return collate([self.records[i] for i in idx], pc=pc)
+        idx = np.asarray(idx, dtype=np.int64)
+        part = np.searchsorted(self.bounds, idx, side="right") - 1
+        local = idx - self.bounds[part]
+        rec_size = self.parts[0].rec_size
+        records = np.empty((len(idx), rec_size), dtype=np.uint8)
+        counts = np.empty(len(idx), dtype=np.int64)
+        for j, (p, l) in enumerate(zip(part, local)):
+            records[j] = self.parts[p].records[l]
+            counts[j] = self.parts[p].n_actions[l]
+        offsets = np.zeros(len(idx) + 1, dtype=np.int64)
+        np.cumsum(counts, out=offsets[1:])
+        policy = np.empty(int(offsets[-1]), dtype=np.float32)
+        for j, (p, l) in enumerate(zip(part, local)):
+            policy[offsets[j]:offsets[j + 1]] = self.parts[p].policy_for(l)
+        return _batch_from_rust(records, policy, offsets, pc)
+
+
+def collate_packed(corpus, idx: np.ndarray, pc: int = 2) -> "Batch":
+    """Encode the records at `idx` of a `PackedCorpus` into a `Batch`.
+
+    All the per-record work (decode state, re-derive legal actions, build planes and action
+    descriptors) happens in one Rust call across the whole minibatch, so no Python object is
+    created per record. Produces exactly what `collate` produces for the same positions.
+    """
+    import kingdomino as kd
+
+    idx = np.ascontiguousarray(idx, dtype=np.int64)
+    records = np.ascontiguousarray(corpus.records[idx])
+    # Gather this batch's ragged policy slices into one flat buffer + offsets.
+    counts = corpus.n_actions[idx]
+    offsets = np.zeros(len(idx) + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    policy = np.empty(int(offsets[-1]), dtype=np.float32)
+    for j, i in enumerate(idx):
+        policy[offsets[j]:offsets[j + 1]] = corpus.policy[
+            corpus.offsets[i]:corpus.offsets[i + 1]
+        ]
+
+    return _batch_from_rust(records, policy, offsets, pc)
+
+
+def _batch_from_rust(records: np.ndarray, policy: np.ndarray,
+                     offsets: np.ndarray, pc: int) -> "Batch":
+    """One Rust call turns packed bytes into every tensor a `Batch` carries."""
+    import kingdomino as kd
+
+    d = kd.encode_packed_batch(records, policy, offsets)
+    if d["pc"] != pc:
+        raise ValueError(f"corpus is {d['pc']}p but the net is {pc}p")
+    return Batch(
+        torch.from_numpy(d["board"]),
+        torch.from_numpy(d["lines"]),
+        torch.from_numpy(d["glob"]),
+        torch.from_numpy(d["a_type"]).long(),
+        torch.from_numpy(d["a_pidx"]).long(),
+        torch.from_numpy(d["a_ltok"]).long(),
+        torch.from_numpy(d["a_mask"]).bool(),
+        torch.from_numpy(d["policy"]),
+        torch.from_numpy(d["value_rel"]),
+        torch.from_numpy(d["score_rel"]) / SCORE_SCALE,
+        torch.from_numpy(d["score_mask"]).bool(),
+        pc,
+    )
 
 
 @dataclass

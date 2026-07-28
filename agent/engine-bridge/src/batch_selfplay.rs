@@ -9,8 +9,8 @@
 //! expands+backs-up every game. With no virtual loss this is *exactly* equivalent to running
 //! the games sequentially — pool size changes throughput, not results.
 
-use numpy::ndarray::{Array2, Array3, Array4};
-use numpy::{IntoPyArray, PyReadonlyArray2};
+use numpy::ndarray::{Array1, Array2, Array3, Array4};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rand::{Rng, SeedableRng};
@@ -24,7 +24,7 @@ use kingdomino_engine::core::{
 };
 use kingdomino_engine::rules::{cell_of, score_board};
 
-use kingdomino_features::encoder;
+use kingdomino_features::{encoder, pack};
 
 type Value = [f32; MAX_PLAYERS];
 
@@ -248,10 +248,15 @@ struct GameSearch {
     pending_path: Vec<(usize, usize)>,
     pending_leaf: i64,
 
-    rec_obs: Vec<String>,
-    rec_legal: Vec<String>,
+    // One entry per recorded decision: the root state and its visit-distribution target. The
+    // observation and legal-action list are pure functions of the state, so they are derived
+    // at drain time (packed corpus) or re-serialized (JSONL) rather than buffered as strings.
+    rec_state: Vec<GameState>,
     rec_policy: Vec<Vec<f32>>,
-    rec_toact: Vec<usize>,
+    /// Packed corpus output: `packed = true` fills `out_recs`/`out_pols`, else `out_lines`.
+    packed: bool,
+    out_recs: Vec<u8>,
+    out_pols: Vec<f32>,
     out_lines: Vec<String>,
     // Terminal observation JSON per finished game (self-play mode only). Harvested every
     // `collect`; the pool keeps or drops them depending on its `emit_summaries` flag.
@@ -292,6 +297,7 @@ impl GameSearch {
         base_seed: u64,
         slot: usize,
         stride: usize,
+        first_game: usize,
         total: usize,
         players: u8,
         variants: Variants,
@@ -302,8 +308,9 @@ impl GameSearch {
         alpha: f32,
         eps: f32,
         record: bool,
+        packed: bool,
     ) -> Self {
-        let first = game_seed(base_seed, slot);
+        let first = game_seed(base_seed, first_game + slot);
         let pc = players as usize;
         GameSearch {
             players: pc,
@@ -325,20 +332,21 @@ impl GameSearch {
             root_noised: false,
             pending_path: Vec::new(),
             pending_leaf: -1,
-            rec_obs: Vec::new(),
-            rec_legal: Vec::new(),
+            rec_state: Vec::new(),
             rec_policy: Vec::new(),
-            rec_toact: Vec::new(),
+            packed,
+            out_recs: Vec::new(),
+            out_pols: Vec::new(),
             out_lines: Vec::new(),
             summaries: Vec::new(),
             record,
-            seat_agent: seat_agent_for(slot, pc),
+            seat_agent: seat_agent_for(first_game + slot, pc),
             result_log: Vec::new(),
             idle: false,
             base_seed,
             stride,
             total,
-            game_index: slot,
+            game_index: first_game + slot,
             completed: 0,
         }
     }
@@ -507,10 +515,7 @@ impl GameSearch {
             .collect();
 
         if self.record {
-            self.rec_obs.push(crate::obs_json(&self.arena[root].gs));
-            self.rec_legal
-                .push(crate::legal_json(&self.arena[root].actions));
-            self.rec_toact.push(self.arena[root].to_act);
+            self.rec_state.push(self.arena[root].gs);
             self.rec_policy.push(policy.clone());
         }
 
@@ -531,26 +536,46 @@ impl GameSearch {
         let outcome = terminal_value(&self.gs).unwrap_or([0.0; MAX_PLAYERS]);
         let pc = self.players;
         if self.record {
-            let value: Vec<f32> = outcome[..pc].to_vec();
-            let val = serde_json::to_string(&value).unwrap();
             // Final per-seat score totals (the dense auxiliary value target) and a game id
             // (the per-game seed — unique within and across corpora) for game-level splits.
-            let totals: Vec<u32> = (0..pc)
-                .map(|s| score_board(&self.gs.boards[s], self.gs.variants).total)
-                .collect();
-            let scores = serde_json::to_string(&totals).unwrap();
-            let game = game_seed(self.base_seed, self.game_index);
-            for i in 0..self.rec_obs.len() {
-                let pol = serde_json::to_string(&self.rec_policy[i]).unwrap();
-                self.out_lines.push(format!(
-                    "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{},\"scores\":{},\"game\":{}}}",
-                    self.rec_obs[i], self.rec_legal[i], pol, self.rec_toact[i], val, scores, game
-                ));
+            let mut totals = [0f32; MAX_PLAYERS];
+            for (s, t) in totals.iter_mut().enumerate().take(pc) {
+                *t = score_board(&self.gs.boards[s], self.gs.variants).total as f32;
             }
-            self.rec_obs.clear();
-            self.rec_legal.clear();
+            let game = game_seed(self.base_seed, self.game_index);
+
+            if self.packed {
+                let rsize = pack::record_size(pc);
+                let mut rec = vec![0u8; rsize];
+                for (state, policy) in self.rec_state.iter().zip(&self.rec_policy) {
+                    pack::pack_record(
+                        &mut rec,
+                        state,
+                        &outcome,
+                        Some(&totals),
+                        policy.len() as u16,
+                        game,
+                    );
+                    self.out_recs.extend_from_slice(&rec);
+                    self.out_pols.extend_from_slice(policy);
+                }
+            } else {
+                let value: Vec<f32> = outcome[..pc].to_vec();
+                let val = serde_json::to_string(&value).unwrap();
+                let scores = serde_json::to_string(&totals[..pc].to_vec()).unwrap();
+                let mut buf = Vec::new();
+                for (state, policy) in self.rec_state.iter().zip(&self.rec_policy) {
+                    legal_actions(state, &mut buf); // pure function of the state
+                    let pol = serde_json::to_string(policy).unwrap();
+                    self.out_lines.push(format!(
+                        "{{\"obs\":{},\"legal\":{},\"policy\":{},\"to_act\":{},\"value\":{},\"scores\":{},\"game\":{}}}",
+                        crate::obs_json(state), crate::legal_json(&buf), pol,
+                        state.to_act, val, scores, game
+                    ));
+                }
+            }
+            self.rec_state.clear();
             self.rec_policy.clear();
-            self.rec_toact.clear();
             // Terminal snapshot (scores incl. bonus breakdown) for board-quality analysis.
             self.summaries.push(crate::obs_json(&self.gs));
         } else {
@@ -738,6 +763,10 @@ pub struct BatchedNetSelfPlay {
     games: Vec<GameSearch>,
     pending: Vec<usize>,
     finished: Vec<String>,
+    // Packed corpus output harvested from finished games: fixed-size records, and the ragged
+    // policy targets concatenated in record order (see `kd-features/src/pack.rs`).
+    finished_recs: Vec<u8>,
+    finished_pols: Vec<f32>,
     finished_summaries: Vec<String>,
     emit_summaries: bool,
     total_games: usize,
@@ -752,7 +781,8 @@ impl BatchedNetSelfPlay {
     #[new]
     #[pyo3(signature = (n_games, total_games, players, n_sims, c_puct = 1.5, temp_moves = 12,
                         dirichlet_alpha = 0.3, noise_eps = 0.25, seed = 0,
-                        harmony = true, middle_kingdom = true, summaries = false))]
+                        harmony = true, middle_kingdom = true, summaries = false,
+                        packed = true, first_game = 0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_games: usize,
@@ -767,6 +797,8 @@ impl BatchedNetSelfPlay {
         harmony: bool,
         middle_kingdom: bool,
         summaries: bool,
+        packed: bool,
+        first_game: usize,
     ) -> PyResult<Self> {
         if n_sims == 0 {
             // Raw-net play has no visit counts: every recorded policy target would be
@@ -786,7 +818,8 @@ impl BatchedNetSelfPlay {
                     seed,
                     s,
                     slots,
-                    total_games,
+                    first_game,
+                    first_game + total_games,
                     players,
                     variants,
                     n_sims,
@@ -796,6 +829,7 @@ impl BatchedNetSelfPlay {
                     dirichlet_alpha,
                     noise_eps,
                     true, // record corpus
+                    packed,
                 )
             })
             .collect();
@@ -803,6 +837,8 @@ impl BatchedNetSelfPlay {
             games,
             pending: Vec::new(),
             finished: Vec::new(),
+            finished_recs: Vec::new(),
+            finished_pols: Vec::new(),
             finished_summaries: Vec::new(),
             emit_summaries: summaries,
             total_games,
@@ -834,6 +870,10 @@ impl BatchedNetSelfPlay {
 
         self.pending.clear();
         for (slot, g) in self.games.iter_mut().enumerate() {
+            if !g.out_recs.is_empty() {
+                self.finished_recs.append(&mut g.out_recs);
+                self.finished_pols.append(&mut g.out_pols);
+            }
             if !g.out_lines.is_empty() {
                 self.finished.append(&mut g.out_lines);
             }
@@ -886,9 +926,35 @@ impl BatchedNetSelfPlay {
         });
     }
 
-    /// Drain finished games' corpus lines (one JSON line per recorded decision).
+    /// Drain finished games' corpus lines (one JSON line per recorded decision). Empty when
+    /// the pool was built with `packed=True` (the default) — use [`Self::drain_packed`].
     fn drain(&mut self) -> Vec<String> {
         std::mem::take(&mut self.finished)
+    }
+
+    /// Drain finished games' packed corpus as `(records [n, record_size] u8, policy [k] f32)`.
+    /// `k` is the total action count across the drained records; each record's slice is its
+    /// `n_actions` entries, concatenated in record order (see `kd-features/src/pack.rs`).
+    fn drain_packed<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyArray2<u8>>, Bound<'py, PyArray1<f32>>) {
+        let rsize = pack::record_size(self.players);
+        let recs = std::mem::take(&mut self.finished_recs);
+        let pols = std::mem::take(&mut self.finished_pols);
+        let n = recs.len() / rsize;
+        (
+            Array2::from_shape_vec((n, rsize), recs)
+                .expect("record buffer is a whole number of records")
+                .into_pyarray_bound(py),
+            Array1::from_vec(pols).into_pyarray_bound(py),
+        )
+    }
+
+    /// Bytes per packed record for this pool's player count.
+    #[getter]
+    fn record_size(&self) -> usize {
+        pack::record_size(self.players)
     }
 
     /// Drain finished games' terminal observations (one JSON line per game; empty unless the
@@ -953,6 +1019,7 @@ impl BatchedArena {
                     seed,
                     s,
                     slots,
+                    0,
                     total_games,
                     players,
                     variants,
@@ -963,6 +1030,7 @@ impl BatchedArena {
                     0.0,   // alpha (unused — no noise)
                     0.0,   // eps = 0 -> no Dirichlet root noise
                     false, // record = false -> arena mode: tally winners, no corpus
+                    false, // (packed is irrelevant when nothing is recorded)
                 )
             })
             .collect();

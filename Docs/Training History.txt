@@ -1,0 +1,57 @@
+Gen 0 trained on MCTS with random rollout.
+
+Did a sweep for sim count and oddly there was an inverse U shape:  32 sims did best vs raw gen 0, 512 sims was essentially equal to raw gen 0
+	The best explanation we could come up with is that the high sims ultimately pooled in the network's 'blind spots' where it thought moves were better than they actually are
+	Doing a sweep with random rollout demonstrated strictly improving gameplay with higher sims so it does seem to be an issue with network strength and not just a bug in how the results are walked back up the tree
+	
+Trained gen 1 on a corpus of 32 sim gen zero play, then did a sweep across every epoch at various sim counts
+	The inverted U seemed to disappear
+	Best model by a significant margin was epoch 1 at 512 sims (92% win rate)
+	
+Gen 2 and gen 3 proceeded apace, however gen 4 (trained on gen 3 w 512 sims) showed little to no improvement.
+
+Turns out the first-play-urgency fix wasn't in (unvisited actions were read as certain losses rather than neutral).
+
+
+=== 2026-07-28 session ===
+
+Engine audited against the BGA implementation (BGA Dump/, now vendored). Domino table,
+territory scoring, placement/connection, the 7x7 bound and the discard rule all already
+matched. Three fixes:
+  - Middle Kingdom: BGA wants the occupied bbox SYMMETRIC about the castle, not merely
+    inside a castle-centered 7x7. We were paying +10 on asymmetric boards.
+  - Tiebreak: BGA ranks score, then biggestTerritory*100 + totalCrowns. We had no crowns
+    level (0.2% of games got the wrong terminal value).
+  - Starting claim order: BGA always uses the snake A,B,B,A in 2p ("first player gets first
+    and last domino choices"); only which seat is first is random. We modelled the tabletop
+    bag draw (6 orders), so 4 of our 6 openings could never occur on BGA.
+gen3 earns Middle Kingdom 99.9% of the time under the strict rule, so the lineage lost
+nothing to the change. tests/bga_parity.rs transcribes BGA's predicates and asserts parity.
+
+Where the flywheel actually stands:
+  - The FPU fix worked. netmcts vs raw gen3 is now MONOTONIC in sims: 16->79.5%, 32->87.8%,
+    64->93.8%, 128->94.2%, 256->96.2%, 512->96.5%. The inverted U is gone, so the old "use
+    32 sims" lesson is obsolete -- generate at 256-512 now.
+  - gen4 still failed though. cap64/cap128 (a capacity A/B on gen3_cap) both lose to gen3:
+    best epoch is 1 for both (46.3% / 41.5%), declining monotonically to 28.0% / 13.3% by
+    epoch 5. The 5x wider net is WORSE at every epoch despite the best val loss (1.75 vs
+    2.02) -- val loss is anti-correlated with strength here, which is why loop.py promotes
+    by arena sweep, never by loss.
+  - That pattern is overfitting, not a search problem: the teacher is 96% stronger than the
+    student's own policy, so the targets are fine; there just isn't enough data.
+
+Root cause of the data starvation, and two bugs behind it:
+  1. The JSONL corpus cost 18.4 KiB/record RESIDENT. One 10k-game corpus = 14.1 GiB, and
+     loop.py's "train on the last 2 corpora" = 28.2 GiB, which does not fit in 16 GB. That
+     is why generations were pinned at 10k games and why loop.py had never actually run
+     (no loop_state.json).
+  2. --overlap derived a second base seed as `seed ^ PHI`, which collided with the game-seed
+     stride (`base + k*PHI`), so pool B replayed pool A's games. Measured: 60 games produced
+     31 distinct, 48.3% of records byte-identical duplicates. Every --overlap corpus ever
+     generated was ~half duplicates, so "10.3k games" was really ~5.2k.
+
+Fixes: packed binary corpus (kd-features/src/pack.rs, 434 B/record + 4 B/action, memmapped,
+Rust batch encoder) and disjoint game-index ranges under one seed. Measured on 201,707
+records: load 85.20s -> 0.04s (2290x), python heap 3411 MiB -> 3.1 MiB (1101x), batching
+6,781 -> 58,472 rec/s (8.6x). Batches are bit-identical to the old path across all 11
+tensors. loop.py --games default raised 10k -> 50k (4M records = ~1.8 GB on disk).

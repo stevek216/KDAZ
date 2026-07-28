@@ -83,6 +83,27 @@ def make_evaluator(args):
     return RolloutEvaluator(seed=args.seed)
 
 
+def _wants_packed(args) -> bool:
+    """Packed binary corpus unless `--out` asks for JSONL by extension.
+
+    Packed is the training format (see `kdagent.corpus`); JSONL stays available for eyeballing
+    a few records, since packed records are not human-readable.
+    """
+    return not args.out.endswith((".jsonl", ".json"))
+
+
+def _open_writer(args, packed: bool):
+    """The corpus writer for this run, or None under `--no-write`."""
+    if args.no_write:
+        return None
+    if packed:
+        from kdagent.corpus import PackedCorpusWriter
+
+        return PackedCorpusWriter(args.out, args.players)
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    return open(args.out, "w", encoding="utf-8")
+
+
 def _summary(games, decisions, sims, elapsed, out, wrote):
     print("--- self-play summary ---")
     print(f"games={games}  decisions={decisions}  sims={sims}  elapsed={elapsed:.2f}s")
@@ -153,15 +174,13 @@ def run_netbatch(args):
     if use_amp:  # channels_last speeds the small-conv forward at large batch (~27% @2048)
         net = net.to(memory_format=torch.channels_last)
 
+    packed = _wants_packed(args)
     pool = kd.BatchedNetSelfPlay(
         n_games=args.concurrent, total_games=args.games, players=args.players, n_sims=args.sims,
         c_puct=args.c_puct, temp_moves=args.temp_moves, dirichlet_alpha=args.dirichlet_alpha,
         noise_eps=args.noise_eps, seed=args.seed,
-        harmony=args.harmony, middle_kingdom=args.middle_kingdom)
-    writer = None
-    if not args.no_write:
-        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-        writer = open(args.out, "w", encoding="utf-8")
+        harmony=args.harmony, middle_kingdom=args.middle_kingdom, packed=packed)
+    writer = _open_writer(args, packed)
 
     prof = args.profile
     cuda = str(device).startswith("cuda")
@@ -197,11 +216,18 @@ def run_netbatch(args):
             pool.apply(logits.float().cpu().numpy(), value_rel.cpu().numpy())
             if prof:
                 ph["apply"] += time.perf_counter() - ta
-        out_lines = pool.drain()
-        if out_lines:
-            total_dec += len(out_lines)
-            if writer is not None:
-                writer.write("\n".join(out_lines) + "\n")
+        if packed:
+            recs, pol = pool.drain_packed()
+            if recs.shape[0]:
+                total_dec += recs.shape[0]
+                if writer is not None:
+                    writer.add(recs, pol)
+        else:
+            out_lines = pool.drain()
+            if out_lines:
+                total_dec += len(out_lines)
+                if writer is not None:
+                    writer.write("\n".join(out_lines) + "\n")
         if time.perf_counter() - last > 1.0:
             done, tot = pool.stats()
             el = time.perf_counter() - t0
@@ -286,25 +312,34 @@ def run_netbatch_overlap(args):
     if use_amp:  # channels_last speeds the small-conv forward at large batch (~27% @2048)
         net = net.to(memory_format=torch.channels_last)
 
-    def make_pool(total, seed):
+    def make_pool(total, first_game):
         return kd.BatchedNetSelfPlay(
             n_games=args.concurrent, total_games=total, players=args.players, n_sims=args.sims,
             c_puct=args.c_puct, temp_moves=args.temp_moves, dirichlet_alpha=args.dirichlet_alpha,
-            noise_eps=args.noise_eps, seed=seed,
-            harmony=args.harmony, middle_kingdom=args.middle_kingdom)
+            noise_eps=args.noise_eps, seed=args.seed,
+            harmony=args.harmony, middle_kingdom=args.middle_kingdom,
+            packed=packed, first_game=first_game)
 
+    packed = _wants_packed(args)
     games_a = (args.games + 1) // 2
     games_b = args.games // 2
-    pools = [make_pool(games_a, args.seed),
-             make_pool(games_b, args.seed ^ 0x9E37_79B9_7F4A_7C15)]
+    # ONE seed stream, split into disjoint game-index ranges. Deriving a second base seed
+    # instead (the old `seed ^ PHI`) collided with the game-seed stride, so pool B replayed
+    # pool A's games and ~48% of every --overlap corpus was exact duplicates.
+    pools = [make_pool(games_a, 0),
+             make_pool(games_b, games_a)]
 
-    writer = None
-    if not args.no_write:
-        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-        writer = open(args.out, "w", encoding="utf-8")
+    writer = _open_writer(args, packed)
 
     def drain(pi):
         nonlocal total_dec
+        if packed:
+            recs, pol = pools[pi].drain_packed()
+            if recs.shape[0]:
+                total_dec += recs.shape[0]
+                if writer is not None:
+                    writer.add(recs, pol)
+            return
         out = pools[pi].drain()
         if out:
             total_dec += len(out)
@@ -446,7 +481,9 @@ def main():
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", default="data/selfplay/corpus.jsonl")
+    ap.add_argument("--out", default="data/selfplay/corpus.kdc",
+                    help="corpus path; a .jsonl/.json suffix writes the legacy JSON form "
+                         "instead of the packed binary corpus")
     ap.add_argument("--no-write", action="store_true", help="skip writing (pure timing)")
     args = ap.parse_args()
 

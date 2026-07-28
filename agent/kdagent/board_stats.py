@@ -47,7 +47,7 @@ def net_selfplay_summaries(ckpt, args):
         if batch["b"] > 0:
             logits, value_rel = _gpu_forward(net, batch, device, use_amp)
             pool.apply(logits.cpu().numpy(), value_rel.cpu().numpy())
-        pool.drain()  # corpus lines not needed
+        pool.drain_packed()  # corpus not needed here — drained only to free the buffers
         summaries += pool.drain_summaries()
         if time.perf_counter() - last > 2.0:
             done, tot = pool.stats()

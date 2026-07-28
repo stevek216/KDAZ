@@ -1,6 +1,6 @@
 """The closed self-play training loop: generate -> train -> evaluate -> promote, repeated.
 
-Each attempt: (1) self-play a corpus from the current champion (netbatch --overlap);
+Each attempt: (1) self-play a packed corpus from the current champion (netbatch --overlap);
 (2) train a candidate on the most recent 2 corpora (fresh net, per-epoch checkpoints);
 (3) epoch-sweep every checkpoint against the champion in the batched arena;
 (4) promote the best epoch to runs/gen{N+1}.best.pt iff its win-rate lower confidence
@@ -111,7 +111,10 @@ def main():
                          "--max-fails consecutive promotion failures)")
     ap.add_argument("--max-fails", dest="max_fails", type=int, default=3,
                     help="consecutive promotion failures that end the run")
-    ap.add_argument("--games", type=int, default=10_000, help="self-play games per corpus")
+    ap.add_argument("--games", type=int, default=50_000,
+                    help="self-play games per corpus. 10k overfits: strength peaked at epoch 1 "
+                         "and fell monotonically, and a 5x wider net was worse still. Packed "
+                         "corpora removed the RAM ceiling that forced the old 10k default.")
     ap.add_argument("--sims", type=int, default=256, help="MCTS sims per move in self-play")
     ap.add_argument("--eval-games", dest="eval_games", type=int, default=1000,
                     help="arena games per epoch in the promotion sweep")
@@ -150,7 +153,7 @@ def main():
                 cur = state["current"] = {
                     "attempt": state["attempt_no"], "champion": champ_gen,
                     "candidate": candidate,
-                    "corpus": str(data_dir / f"gen{candidate}_a{state['attempt_no']}.jsonl"),
+                    "corpus": str(data_dir / f"gen{candidate}_a{state['attempt_no']}.kdc"),
                     "corpus_done": False,
                     "prefix": str(runs_dir / f"gen{candidate}_a{state['attempt_no']}"),
                     "trained": False,

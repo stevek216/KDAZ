@@ -5,4 +5,5 @@
 //! schema. The pure engine remains the single source of rules truth; this is agent logic.
 
 pub mod encoder;
+pub mod pack;
 pub mod serialize;
