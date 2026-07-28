@@ -1,0 +1,61 @@
+{
+    "table": {
+        "immediate_victory": {
+            "id": 10,
+            "name": "Immediate victory (Lost Treasures)",
+            "type": "bool"
+        }
+    },
+    "player": {
+        "field_score": {
+            "id": 11,
+            "name": "Score for fields",
+            "type": "int"
+        },
+        "forest_score": {
+            "id": 12,
+            "name": "Score for forests",
+            "type": "int"
+        },
+        "lake_score": {
+            "id": 13,
+            "name": "Score for lakes",
+            "type": "int"
+        },
+        "grassland_score": {
+            "id": 14,
+            "name": "Score for grasslands",
+            "type": "int"
+        },
+        "swamp_score": {
+            "id": 15,
+            "name": "Score for swamps",
+            "type": "int"
+        },
+        "mountain_score": {
+            "id": 16,
+            "name": "Score for mountains",
+            "type": "int"
+        },
+        "the_middle_kingdom_score": {
+            "id": 17,
+            "name": "Score for The middle Kingdom",
+            "type": "int"
+        },
+        "harmony_score": {
+            "id": 18,
+            "name": "Score for Harmony",
+            "type": "int"
+        },
+        "discarded_dominoes": {
+            "id": 19,
+            "name": "Dominoes discarded",
+            "type": "int"
+        },
+        "immediate_victory": {
+            "id": 20,
+            "name": "Immediate victory (Lost Treasures)",
+            "type": "bool"
+        }
+    }
+}

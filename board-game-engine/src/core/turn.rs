@@ -42,8 +42,10 @@ pub fn is_chance(gs: &GameState) -> bool {
 /// The per-seat outcome vector at a terminal state, or `None` if the game is not over.
 /// Entry `i` is seat `i`'s value (absolute seat index; dead seats are `0.0`).
 ///
-/// Ranking (rulebook p.3): highest total score wins; ties broken by the **largest single
-/// territory**; a remaining tie is a **shared victory**. Co-winners split `1.0` evenly
+/// Ranking: highest total score wins; ties broken by the **largest single territory**, then
+/// by **total crowns**; a remaining tie is a **shared victory**. This mirrors BGA's
+/// `finalScoring()`, which ranks on `player_score` then
+/// `player_score_aux = biggestTerritory * 100 + totalCrowns`. Co-winners split `1.0` evenly
 /// (`1/w` each — so 2p win/loss = 1.0/0.0 and a 2p shared = 0.5/0.5). The convention is
 /// swappable at trainer time; the engine just reports the ranking (CLAUDE §4, Q6).
 pub fn terminal_value(gs: &GameState) -> Option<[f32; MAX_PLAYERS]> {
@@ -51,11 +53,11 @@ pub fn terminal_value(gs: &GameState) -> Option<[f32; MAX_PLAYERS]> {
         return None;
     }
     let pc = gs.player_count as usize;
-    // (total score, largest territory) per seat — lexicographic comparison = the rulebook order.
-    let mut ranked = [(0u32, 0u32); MAX_PLAYERS];
+    // (score, largest territory, crowns) per seat — lexicographic comparison = BGA's ranking.
+    let mut ranked = [(0u32, 0u32, 0u32); MAX_PLAYERS];
     for (seat, slot) in ranked.iter_mut().enumerate().take(pc) {
         let s = score_board(&gs.boards[seat], gs.variants);
-        *slot = (s.total, s.largest_territory);
+        *slot = (s.total, s.largest_territory, s.total_crowns);
     }
     let best = *ranked[..pc].iter().max().expect("at least one seat");
     let winners = ranked[..pc].iter().filter(|&&r| r == best).count() as f32;
@@ -203,7 +205,18 @@ fn next_permutation(a: &mut [u8; LINE]) -> bool {
     true
 }
 
+/// How many distinct starting-claim orders exist.
+///
+/// **2 seats:** BGA does *not* draw kings at random — `activateOwnerOfNextKing()` skips the
+/// player advance after the 2nd claim, so the order is always the snake `A,B,B,A` ("a
+/// balanced setup is done: first player gets first and last domino choices"). Only *which*
+/// seat is first is random, so there are 2 outcomes, not `4!/(2!2!) = 6`.
+///
+/// **4 seats:** one king each, claiming in the random seating order → `4! = 24`.
 fn count_start_orders(gs: &GameState) -> u32 {
+    if gs.player_count == 2 {
+        return 2;
+    }
     let mut m = start_multiset(gs);
     let mut n = 1;
     while next_permutation(&mut m) {
@@ -213,6 +226,11 @@ fn count_start_orders(gs: &GameState) -> u32 {
 }
 
 fn nth_start_order(gs: &GameState, i: u8) -> [u8; LINE] {
+    if gs.player_count == 2 {
+        let first = i % 2;
+        let second = 1 - first;
+        return [first, second, second, first]; // BGA's snake
+    }
     let mut m = start_multiset(gs);
     for _ in 0..i {
         next_permutation(&mut m);
@@ -418,16 +436,25 @@ mod tests {
 
     #[test]
     fn start_order_counts() {
-        // 2p: 4!/(2!2!) = 6 distinct claim orders.
+        // 2p: BGA's snake — only which seat goes first is random, so 2 orders (not the 6
+        // distinct permutations of {0,0,1,1}); each is A,B,B,A.
         let gs = new_game(2);
-        assert_eq!(count_start_orders(&gs), 6);
-        // 4p: 4! = 24.
+        assert_eq!(count_start_orders(&gs), 2);
+        assert_eq!(nth_start_order(&gs, 0), [0, 1, 1, 0]);
+        assert_eq!(nth_start_order(&gs, 1), [1, 0, 0, 1]);
+        // Each seat claims twice, and the first player takes picks 1 and 4.
+        for i in 0..2u8 {
+            let o = nth_start_order(&gs, i);
+            assert_eq!(o[0], o[3], "first player also claims last");
+            assert_eq!(o[1], o[2], "second player claims the two middle dominoes");
+            assert_ne!(o[0], o[1]);
+        }
+        // 4p: one king each, claiming in the random seating order -> 4! = 24.
         let gs4 = new_game(4);
         assert_eq!(count_start_orders(&gs4), 24);
-        // nth_start_order is a stable, distinct enumeration.
         let mut seen = std::collections::HashSet::new();
-        for i in 0..6 {
-            assert!(seen.insert(nth_start_order(&gs, i)));
+        for i in 0..24 {
+            assert!(seen.insert(nth_start_order(&gs4, i)));
         }
     }
 

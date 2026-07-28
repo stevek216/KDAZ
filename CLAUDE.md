@@ -91,8 +91,9 @@ Speed never buys a correctness compromise; UI polish never buys an engine compro
 - **Scoring:** for each **territory** (orthogonally-connected same-terrain squares),
   `size × crowns`; sum over territories. Crownless territories score 0. Then variant
   bonuses: **Harmony** +5 (full gap-free 7×7), **Middle Kingdom** +10 (castle centered).
-- **Win:** highest score. Tie → **largest single territory** (most connected squares);
-  still tied → **shared victory**.
+- **Win:** highest score. Tie → **largest single territory** (most connected squares); still
+  tied → **most total crowns**; still tied → **shared victory**. (BGA ranks on
+  `player_score`, then `player_score_aux = biggestTerritory*100 + totalCrowns`.)
 
 ## 4. Algorithm direction (background — not the engine's concern)
 
@@ -121,10 +122,19 @@ The engine is **algorithm-agnostic**. Primary plan: **AlphaZero-style MCTS**, ad
   `docs/bga/README.md`); the `const DOMINOES` table in `src/components/domino.rs` is
   transcribed from it and guarded by tally tests. BGA's `mountain` = the mine terrain.
   **Do not fabricate tile data** (Space Base was burned by a fabricated placeholder CSV).
-- **Middle Kingdom / Harmony — RESOLVED (2026-06-07).** Both are **purely additive bonuses
-  that never constrain legal play** (a board may have gaps / an off-center castle; it just
-  forfeits the points). Geometric tests settled and implemented in `rules/score.rs` (see
-  `docs/engine-design.md` §7).
+- **Middle Kingdom / Harmony — RESOLVED (2026-06-07; corrected against BGA 2026-07-28).**
+  Both are **purely additive bonuses that never constrain legal play** (a board may have gaps
+  / an off-center castle; it just forfeits the points). **Middle Kingdom** = the occupied
+  bounding box is *symmetric about the castle* (not merely inside a castle-centered 7×7 —
+  that loosening was a divergence from BGA and is reverted). See `docs/engine-design.md` §7.
+- **BGA is the reference implementation.** The full BGA Studio source lives in `BGA Dump/`
+  (`kingdomino.game.php` is the authoritative backend). When a rule question comes up, read
+  it there; `board-game-engine/tests/bga_parity.rs` transcribes BGA's predicates and asserts
+  the engine agrees over whole games.
+- **Starting-claim order follows BGA, not the rulebook (decided 2026-07-28).** In 2p BGA
+  always uses the snake `A,B,B,A` (first player gets picks 1 and 4); only which seat is first
+  is random. The tabletop rulebook's random king draw would give 6 seat orders — we
+  deliberately do not model that, since the agent is aimed at BGA.
 
 ## 7. Conventions
 

@@ -1,0 +1,3 @@
+# BGA game art is the publisher's, not covered by the implementation's MIT licence, and
+# irrelevant to the engine (we vendor this dump for the RULES). Keep it local-only.
+kingdomino/img/

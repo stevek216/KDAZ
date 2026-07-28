@@ -19,13 +19,16 @@ pub struct ScoreBreakdown {
     pub middle_kingdom: u32,
     /// `crown_score + harmony + middle_kingdom`.
     pub total: u32,
-    /// Size of the largest single territory (the tie-breaker, §7.1).
+    /// Size of the largest single territory (first tie-breaker, §7.1).
     pub largest_territory: u32,
+    /// Total crowns on the board (second tie-breaker, §7.1 — BGA's `player_score_aux`
+    /// is `largest_territory * 100 + total_crowns`).
+    pub total_crowns: u32,
 }
 
 /// Score `board` under `variants`.
 pub fn score_board(board: &Board, variants: Variants) -> ScoreBreakdown {
-    let (crown_score, largest_territory) = territories(board);
+    let (crown_score, largest_territory, total_crowns) = territories(board);
     let harmony = if variants.harmony && is_complete_grid(board) {
         5
     } else {
@@ -42,14 +45,16 @@ pub fn score_board(board: &Board, variants: Variants) -> ScoreBreakdown {
         middle_kingdom,
         total: crown_score + harmony + middle_kingdom,
         largest_territory,
+        total_crowns,
     }
 }
 
-/// Flood-fill every territory; return `(Σ size×crowns, largest territory size)`.
-fn territories(board: &Board) -> (u32, u32) {
+/// Flood-fill every territory; return `(Σ size×crowns, largest territory size, total crowns)`.
+fn territories(board: &Board) -> (u32, u32, u32) {
     let mut visited = [[false; STORE]; STORE];
     let mut crown_score = 0u32;
     let mut largest = 0u32;
+    let mut total_crowns = 0u32;
     // Only the occupied bounding box can hold terrain squares.
     for r in board.min_r..=board.max_r {
         for c in board.min_c..=board.max_c {
@@ -91,9 +96,10 @@ fn territories(board: &Board) -> (u32, u32) {
             }
             crown_score += size * crowns;
             largest = largest.max(size);
+            total_crowns += crowns;
         }
     }
-    (crown_score, largest)
+    (crown_score, largest, total_crowns)
 }
 
 /// Harmony: the kingdom completely fills a `GRID×GRID` box (castle + every terrain cell, no
@@ -103,16 +109,17 @@ fn is_complete_grid(board: &Board) -> bool {
     board.filled as usize == GRID * GRID - 1
 }
 
-/// Middle Kingdom: the castle (always stored at `CENTER`) can be centered in **a** `GRID×GRID`
-/// window that fully contains the kingdom — i.e. every occupied cell lies within `GRID/2` of
-/// the castle on both axes. The kingdom does NOT need to span the full grid (decided
-/// 2026-07-05, loosening the original full-span reading); gaps are allowed.
+/// Middle Kingdom: the castle sits at the exact center of the kingdom's occupied bounding
+/// box — the box extends equally far on both sides of the castle along each axis.
+///
+/// This matches BGA's `finalScoring()` (`-minX == maxX && -minY == maxY`, where min/max are
+/// seeded at the castle), i.e. "his castle in the center of his territory". The kingdom need
+/// not span the full grid and gaps are allowed, but an asymmetric footprint does *not*
+/// qualify even when it would fit inside a castle-centered `GRID×GRID` window — that looser
+/// reading (2026-07-05) diverged from BGA and was reverted (see `tests/bga_parity.rs`).
 fn is_castle_centered(board: &Board) -> bool {
-    let half = (GRID / 2) as u8;
-    board.min_r >= CENTER - half
-        && board.max_r <= CENTER + half
-        && board.min_c >= CENTER - half
-        && board.max_c <= CENTER + half
+    (CENTER - board.min_r) == (board.max_r - CENTER)
+        && (CENTER - board.min_c) == (board.max_c - CENTER)
 }
 
 #[cfg(test)]
@@ -214,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn middle_kingdom_does_not_require_a_full_span() {
-        // A small kingdom (one square each side of the castle) fits centered in a 7×7
-        // window -> +10 even though the footprint is nowhere near GRID×GRID.
+    fn middle_kingdom_needs_a_symmetric_bbox_not_a_full_span() {
+        // A small kingdom (one square each side of the castle) is symmetric about the castle
+        // -> +10, even though the footprint is nowhere near GRID×GRID.
         let mut b = Board::with_castle();
         b.place_square(CENTER, CENTER - 1, Terrain::Wheat, 0);
         b.place_square(CENTER, CENTER + 1, Terrain::Wheat, 0);
@@ -227,8 +234,8 @@ mod tests {
         );
         assert_eq!(s.harmony, 0, "but not Harmony (incomplete grid)");
 
-        // Asymmetric but still within CENTER±GRID/2 on every side -> a centered 7×7 window
-        // containing the whole kingdom exists -> +10.
+        // Asymmetric: 1 column left of the castle, GRID/2 to the right. It fits inside a
+        // castle-centered 7×7 window, but the bbox is not symmetric -> no bonus (BGA rule).
         let mut asym = Board::with_castle();
         let half = (GRID / 2) as u8;
         for k in 1..=half {
@@ -237,20 +244,30 @@ mod tests {
         asym.place_square(CENTER, CENTER - 1, Terrain::Wheat, 0);
         let s2 = score_board(&asym, Variants::MIGHTY_DUEL);
         assert_eq!(
-            s2.middle_kingdom, 10,
-            "within ±GRID/2 of the castle on every side"
+            s2.middle_kingdom, 0,
+            "bbox -1..+{half} is off-center even though it fits a centered window"
         );
 
-        // One square past the window (GRID/2 + 1 away) -> impossible to center -> 0.
-        let mut wide = Board::with_castle();
-        for k in 1..=(half + 1) {
-            wide.place_square(CENTER, CENTER + k, Terrain::Wheat, 0);
+        // Extending the left side to match makes it symmetric again -> +10.
+        for k in 2..=half {
+            asym.place_square(CENTER, CENTER - k, Terrain::Wheat, 0);
         }
-        let s3 = score_board(&wide, Variants::MIGHTY_DUEL);
         assert_eq!(
-            s3.middle_kingdom, 0,
-            "cell beyond the castle-centered window"
+            score_board(&asym, Variants::MIGHTY_DUEL).middle_kingdom,
+            10,
+            "equal extent on both sides -> centered"
         );
+    }
+
+    #[test]
+    fn total_crowns_is_the_second_tiebreaker() {
+        // Two crowned squares on distinct territories: crowns are summed board-wide.
+        let mut b = Board::with_castle();
+        b.place_square(CENTER, CENTER - 1, Terrain::Forest, 2);
+        b.place_square(CENTER, CENTER + 1, Terrain::Lake, 1);
+        let s = score_board(&b, Variants::NONE);
+        assert_eq!(s.total_crowns, 3);
+        assert_eq!(s.crown_score, 3, "1×2 + 1×1");
     }
 
     #[test]

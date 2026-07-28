@@ -293,11 +293,19 @@ node would have `C(k,4)` outcomes (≈ 194k at the start) — infeasible to enum
 
 ### 6.2 Starting-claim order
 
-`StartOrder` is a chance node choosing the order the 4 kings claim the first line. With 2
-kings/seat the strategically-relevant object is the **seat order** (which seat claims
-1st/2nd/3rd/4th), of which there are `4!/(2!2!) = 6`; modeled as 6 equiprobable outcomes
-(`StartOrder{perm}`), or the 24 king-permutations if king identity is ever needed. This
-is the only chance event besides draws.
+`StartOrder` is a chance node choosing the order the 4 kings claim the first line — the only
+chance event besides draws. The outcome set follows **BGA, not the tabletop king draw**:
+
+- **2 seats (the target):** BGA runs a fixed **snake** `A,B,B,A`. `activateOwnerOfNextKing()`
+  advances the active player after every claim *except* when exactly 2 dominoes are owned,
+  with the comment "a balanced setup is done: first player gets first and last domino
+  choices". Only *which* seat is first is random → **2 equiprobable outcomes**. (The physical
+  rulebook draws kings from a bag, which would give all `4!/(2!2!) = 6` seat orders; BGA
+  deliberately deviates for balance, and BGA is our reference — decided 2026-07-28.)
+- **4 seats:** one king each, claiming in the random seating order → `4! = 24` outcomes.
+
+Pinned by `tests/bga_parity.rs::starting_claim_order_matches_bga`, which replays BGA's
+control flow directly.
 
 > **Q4 — is StartOrder worth a chance node, or fold into setup?** It only affects the
 > opening. Kept explicit so self-play sees varied openings and the search treats it
@@ -329,26 +337,30 @@ a board can earn both, either, or neither.
   spans exactly `GRID` in both axes **and** every cell in it is filled, i.e.
   `filled + 1(castle) == GRID*GRID` (rulebook p.4). Requires zero discards. (No effect on
   legality — an incomplete or gappy kingdom is still legal, just unrewarded.)
-- **Middle Kingdom** (+10): the castle can be **centered in a `GRID×GRID` window that fully
-  contains the kingdom** — every occupied cell lies within `GRID/2` of the castle on both
-  axes. The kingdom need not span the full grid. Gaps allowed. Independent of Harmony.
+- **Middle Kingdom** (+10): the castle sits at the **exact center of the kingdom's occupied
+  bounding box** — the box reaches equally far on each side of the castle along both axes.
+  The kingdom need not span the full grid. Gaps allowed. Independent of Harmony.
 
 Variant toggles live in a small `Rules`/config carried alongside (or as `const` features
 for the target build); the target enables both Harmony and Middle Kingdom.
 
-> **Q5 — variant bonus definitions — RESOLVED (2026-06-07, Middle Kingdom loosened
-> 2026-07-05).** Both bonuses are additive, never constraints. **Harmony** = a complete
-> gap-free `GRID×GRID` (`filled == GRID²−1`). **Middle Kingdom** = the castle is centerable
-> in *a* `GRID×GRID` window containing the whole kingdom (every occupied cell within
-> `GRID/2` of the castle on both axes) — an under-sized kingdom with a physically centered
-> castle qualifies. The original resolution required a full `GRID×GRID` footprint; that
-> reading was reversed 2026-07-05. Implemented and tested in `rules/score.rs`.
+> **Q5 — variant bonus definitions — RESOLVED (2026-06-07; Middle Kingdom loosened
+> 2026-07-05, then corrected to BGA 2026-07-28).** Both bonuses are additive, never
+> constraints. **Harmony** = a complete gap-free `GRID×GRID` (`filled == GRID²−1`), which is
+> equivalent to BGA's "player discarded nothing" test since every placement adds exactly 2
+> squares. **Middle Kingdom** = the occupied bounding box is symmetric about the castle
+> (`-minX == maxX && -minY == maxY`), matching BGA `finalScoring()`. Two earlier readings
+> were wrong: requiring a full `GRID×GRID` footprint (too strict), then allowing any kingdom
+> inside a castle-centered `GRID×GRID` window (too loose — it paid out on asymmetric
+> footprints BGA scores 0). Implemented in `rules/score.rs`, pinned by `tests/bga_parity.rs`.
 
 ### 7.1 Terminal value
 
 `terminal_value -> Option<[f32; MAX_PLAYERS]>` (max-n vector, one entry per seat; CLAUDE
 §4). Highest total score wins; **tie → largest single territory** (most connected
-same-terrain squares); still tied → **shared victory** (rulebook p.3).
+same-terrain squares); **still tied → most total crowns**; still tied → **shared victory**.
+This is BGA's ranking: `player_score`, then
+`player_score_aux = biggestTerritory * 100 + totalCrowns` (`finalScoring()`).
 
 > **Q6 — value convention.** Proposal (swappable at trainer time, like Space Base):
 > `1.0` to the winner, `0.0` to the loser, `0.5` each on a fully-shared victory. (Space

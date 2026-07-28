@@ -1,0 +1,15 @@
+{
+    "201": {
+        "name": "Edition",
+        "needReload": false,
+        "values": {
+            "2025": {
+                "name": "New (2025)"
+            },
+            "2016": {
+                "name": "Original (2016)"
+            }
+        },
+        "default": 2025
+    }
+}

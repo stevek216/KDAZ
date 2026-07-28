@@ -206,7 +206,8 @@ impl Slot {
 pub enum Phase {
     /// CHANCE: draw dominoes one at a time into the line being filled (§6.1).
     Draw,
-    /// CHANCE: random claim order for the starting round (§6.2).
+    /// CHANCE: claim order for the starting round (§6.2). For 2 seats this only picks which
+    /// seat is first — the order is always BGA's snake `A,B,B,A`.
     StartOrder,
     /// Starting round: a seat claims a `current_line` domino, in the drawn order.
     StartClaim,

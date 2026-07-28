@@ -1,0 +1,956 @@
+/**
+ *------
+ * BGA framework: © Gregory Isabelli <gisabelli@boardgamearena.com> & Emmanuel Colin <ecolin@boardgamearena.com>
+ * kingdomino implementation : © Alena Laskavaia <laskava@gmail.com> & Romain Fromi <romain.fromi@gmail.com>
+ *
+ * This code has been produced on the BGA studio platform for use on http://boardgamearena.com.
+ * See http://en.boardgamearena.com/#!doc/Studio for more information.
+ * -----
+ *
+ * kingdomino.css
+ *
+ * kingdomino stylesheet
+ *
+ */
+/*
+    This is the CSS stylesheet of your game User Interface.
+    
+    Styles defined on this file will be applied to the HTML elements you define in your
+    HTML template (kingdomino_kingdomino.tpl), and to HTML elements you create dynamically
+    (in kingdomino.js).
+    
+    Usually, you are using CSS to:
+    
+    1°) define the overall layout of your game
+        (ex: place the board on the top left, place player's hand beside, place the deck on the right, ...).
+
+    2°) create your CSS-sprites:
+        All images of your games should be gathered into a small number of image files. Then, using
+        background-image and background-position CSS properties, you create HTML blocks that can
+        display these images correctly (see example below).
+    
+    3°) ... anything else:
+        It is really easy to add and remove CSS classes dynamically from your Javascript with
+        dojo.addClass and dojo.removeClass. It is also easy to check if an element has a class
+        (dojo.hasClass) or to get all elements with a specific class (dojo.query). This is why,
+        very often, using CSS classes for the logic of your user interface allow you to do complex
+        thing easily.
+        
+        
+     Note: on the production platform, this file will be compressed and comments will be removed.
+           Consequently, don't hesitate to put as many comments as necessary.
+*/
+
+/********* You can start writing your CSS below this line: **********/
+#dominoes_and_player_kingdom {
+  position: relative;
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+#kingdom {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin-top: 5px;
+}
+
+#kingdom_label {
+  margin: 10px;
+}
+
+#kingdom:before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.3);
+  z-index: -5;
+}
+
+.square {
+  width: 100px;
+  height: 100px;
+  position: absolute;
+  cursor: pointer;
+}
+
+.square:before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.5);
+  z-index: -5;
+}
+
+.square .domino.preview {
+  opacity: 0.5;
+}
+
+/* blue */
+.kingdom[data-value="0000ff"] .castle {
+  background-position: 103px 103px;
+}
+
+/* yellow */
+.kingdom[data-value="ffa500"] .castle {
+  background-position: 206px 103px;
+}
+
+/* pink */
+.kingdom[data-value="ff1493"] .castle {
+  background-position: 206px 212px;
+}
+
+/* green */
+.kingdom[data-value="008000"] .castle {
+  background-position: 103px 212px;
+}
+
+/* blue */
+[data-edition="2016"] .kingdom[data-value="0000ff"] .castle {
+  background-position: 103px 103px;
+}
+
+/* yellow */
+[data-edition="2016"] .kingdom[data-value="ffa500"] .castle {
+  background-position: 205px 103px;
+}
+
+/* pink */
+[data-edition="2016"] .kingdom[data-value="ff1493"] .castle {
+  background-position: 205px 205px;
+}
+
+/* green */
+[data-edition="2016"] .kingdom[data-value="008000"] .castle {
+  background-position: 103px 205px;
+}
+
+/** Scrollable area **/
+#map_container {
+  position: relative;
+  overflow: hidden;
+  flex-grow: 1;
+}
+
+#map_scrollable, #map_scrollable_oversurface {
+  position: absolute;
+}
+
+#map_surface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#map_footer {
+  text-align: center;
+}
+
+#info_and_dominoes {
+  display: flex;
+  flex-direction: column;
+}
+
+#dominoes_displayed {
+  display: flex;
+  flex-direction: row;
+  flex-grow: 1;
+}
+
+#current_dominoes_spaces, #future_dominoes_spaces {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.info {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.3);
+  padding: 0 5px;
+  margin: auto;
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.info .bgabutton {
+  margin-top: 5px;
+  margin-bottom: 5px;
+}
+
+.info .bgabutton.hidden {
+  display: none;
+}
+
+.active_slot {
+  cursor: pointer;
+  box-shadow: 0px 0px 4px 2px #03afbd !important;
+}
+
+.selected {
+  cursor: pointer;
+  -moz-box-shadow: 0px 0px 4px 2px blue !important;
+  -webkit-box-shadow: 0px 0px 4px 2px blue !important;
+  -o-box-shadow: 0px 0px 4px 2px blue !important;
+  box-shadow: 0px 0px 4px 2px blue !important;
+}
+
+.active_slot:hover {
+  -moz-box-shadow: 0px 0px 1px 3px blue !important;
+  -webkit-box-shadow: 0px 0px 1px 3px blue !important;
+  -o-box-shadow: 0px 0px 1px 3px blue !important;
+  box-shadow: 0px 0px 1px 3px blue !important;
+}
+
+.domino_space {
+  margin: 10px;
+  width: 200px;
+  height: 100px;
+}
+
+.domino {
+  position: absolute;
+  width: 200px;
+  height: 100px;
+  transition: left 0.8s ease, top 0.8s ease, transform 0.8s ease, box-shadow 0.8s;
+}
+
+.domino.placing {
+  z-index: 50;
+}
+.domino.dragging {
+  transition: none;
+  z-index:200;
+  pointer-events: none;
+}
+
+
+.domino.hidden {
+  opacity: 0;
+}
+
+#kingdom .domino.placing {
+  z-index: unset;
+}
+
+.domino-background {
+  background-image: url(img/tiles-2025.jpg);
+  width: 200px;
+  height: 100px;
+  transition: transform 0.5s ease;
+  outline: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+[data-edition="2016"] .domino-background {
+  background-image: url(img/tiles.jpg);
+}
+
+.domino.followMouse {
+  transition: left 0.2s ease-out, top 0.2s ease-out, transform 0.5s ease, box-shadow 0.5s;
+}
+
+.selectable {
+  cursor: pointer;
+}
+
+.selectable, .domino.placing .domino-background {
+  box-shadow: 0 0 4px 2px white;
+  animation: glow 2s infinite;
+}
+
+.selectable:hover .domino-background, .domino.drop-target .domino-background {
+  outline: 2px solid green;
+}
+
+.domino.last-placed .domino-background {
+  outline: 1px solid darkred;
+}
+
+@keyframes glow {
+  from {
+    box-shadow: 0 0 4px 2px white;
+  }
+  50% {
+    box-shadow: 0 0 6px 4px white;
+  }
+  to {
+    box-shadow: 0 0 4px 2px white;
+  }
+}
+
+.manipulation-arrow {
+  width: 45px;
+  height: 45px;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin: auto;
+  cursor: pointer;
+  transition: transform 0.2s;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -o-user-select: none;
+  user-select: none;
+  filter: drop-shadow(0px 0px 2px white);
+}
+
+.domino.dragging .manipulation-arrow {
+  display: none;
+}
+
+.manipulation-arrow.rotate-left {
+  transform: scaleX(-1); /* transform: rotate(180deg); */
+  right: 100px;
+}
+
+.manipulation-arrow.rotate-left.anticlockwise {
+  transform: none;
+}
+
+.manipulation-arrow.reverse {
+  transform: rotate(45deg);
+}
+
+.manipulation-arrow.rotate-right {
+  transform: scaleX(-1);
+  left: 100px;
+}
+
+.manipulation-arrow.rotate-right.anticlockwise {
+  transform: none; /* transform: rotate(180deg); */
+}
+
+#kingdom .domino.placing .manipulation-arrow.rotate-right:hover {
+  transform: scaleX(-1.2) scaleY(1.2);
+}
+
+#kingdom .domino.placing .manipulation-arrow.rotate-left:hover {
+  transform: rotate(180deg) scaleX(-1.2) scaleY(1.2);
+}
+
+#kingdom .domino.placing .manipulation-arrow.rotate-left.anticlockwise:hover {
+  transform: scale(1.2);
+}
+
+#kingdom .domino.placing .manipulation-arrow.reverse:hover {
+  transform: rotate(45deg) scale(1.2);
+}
+
+#kingdom .domino.placing .manipulation-arrow.rotate-right.anticlockwise:hover {
+  transform: rotate(180deg) scale(1.2);
+}
+
+#kingdom .manipulation-arrow, .manipulation-arrow.hidden {
+  display: none;
+}
+
+.castle {
+  background-image: url(img/tiles-2025.jpg);
+  position: absolute;
+  width: 100px;
+  height: 100px;
+  -moz-box-shadow: 1px 1px 2px 1px #222;
+  -webkit-box-shadow: 1px 1px 2px 1px #222;
+  -o-box-shadow: 1px 1px 2px 1px #222;
+  box-shadow: 1px 1px 2px 1px #222;
+}
+
+[data-edition="2016"] .castle {
+  background-image: url(img/tiles.jpg);
+}
+
+.domino .shadow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: -1;
+  -moz-box-shadow: 1px 1px 2px 1px #222;
+  -webkit-box-shadow: 1px 1px 2px 1px #222;
+  -o-box-shadow: 1px 1px 2px 1px #222;
+  box-shadow: 1px 1px 2px 1px #222;
+  transition: transform 0.5s ease, box-shadow 0.5s ease;
+}
+
+.domino.shadow-rotation-1 .shadow {
+  -moz-box-shadow: 1px -1px 2px 1px #222;
+  -webkit-box-shadow: 1px -1px 2px 1px #222;
+  -o-box-shadow: 1px -1px 2px 1px #222;
+  box-shadow: 1px -1px 2px 1px #222;
+}
+
+.domino.shadow-rotation-2 .shadow {
+  -moz-box-shadow: -1px -1px 2px 1px #222;
+  -webkit-box-shadow: -1px -1px 2px 1px #222;
+  -o-box-shadow: -1px -1px 2px 1px #222;
+  box-shadow: -1px -1px 2px 1px #222;
+}
+
+.domino.shadow-rotation-3 .shadow {
+  -moz-box-shadow: -1px 1px 2px 1px #222;
+  -webkit-box-shadow: -1px 1px 2px 1px #222;
+  -o-box-shadow: -1px 1px 2px 1px #222;
+  box-shadow: -1px 1px 2px 1px #222;
+}
+
+.king {
+  position: absolute;
+  background-image: url(img/kings.webp);
+  width: 57px;
+  height: 70px;
+  z-index: 100;
+  transition: all 0.5s ease;
+  filter: drop-shadow(4px 4px 4px black);
+}
+
+/* pink */
+.king_ff1493 {
+  background-position-x: 33.3%;
+}
+
+/* yellow */
+.king_ffa500 {
+  background-position-x: 66.7%;
+}
+
+/* blue */
+.king_0000ff {
+  background-position-x: 100%;
+}
+
+.king.dragging_in_progress {
+  transition: none;
+  z-index: 200;
+}
+
+/* Lost Treasures expansion: 7-cell horizontal sprite (img/treasures.webp):
+   yellow | green | pink | blue | red | joker | back.
+   The 16 treasure tokens are 5 gem types x 3 identical + 1 joker, so token
+   numbers map in groups of three to the first five cells. Size is provisional. */
+.treasure {
+  background-image: url(img/treasures.webp);
+  background-repeat: no-repeat;
+  background-size: 700% 100%;
+  width: 64px;
+  height: 64px;
+  filter: drop-shadow(3px 3px 2px black);
+  transition: transform 0.3s ease;
+}
+
+.treasure_1, .treasure_2, .treasure_3 { background-position-x: 0%; }
+.treasure_4, .treasure_5, .treasure_6 { background-position-x: 16.667%; }
+.treasure_7, .treasure_8, .treasure_9 { background-position-x: 33.333%; }
+.treasure_10, .treasure_11, .treasure_12 { background-position-x: 50%; }
+.treasure_13, .treasure_14, .treasure_15 { background-position-x: 66.667%; }
+.treasure_16 { background-position-x: 83.333%; }
+.treasure_back { background-position-x: 100%; }
+
+.treasure_supply {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.treasure_supply.hidden {
+  display: none;
+}
+
+#treasure_supply_gems {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#treasure_chest {
+  position: relative;
+}
+
+#treasure_chest_count {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.treasure.selectable {
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+
+/* A gem placed on a kingdom sits on the corner where four tiles meet. It is
+   centered on that intersection point (left/top are the intersection pixel, the
+   negative margins pull the 64px sprite back by half its size). */
+.placed-treasure {
+  position: absolute;
+  margin-left: -32px;
+  margin-top: -32px;
+  z-index: 50;
+  pointer-events: auto;
+  transition: left 0.8s ease, top 0.8s ease, transform 0.3s ease;
+}
+
+.placed-treasure.treasure-preview {
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 51;
+}
+
+/* Single rotate arrow on the gem preview, reusing the domino arrow art. The
+   preview itself ignores pointer events; the arrow must still be clickable, and
+   the global "#kingdom .manipulation-arrow { display:none }" rule must not hide
+   it since the preview lives inside #kingdom. */
+#kingdom .manipulation-arrow.treasure-rotate-arrow,
+.manipulation-arrow.treasure-rotate-arrow {
+  display: block;
+  pointer-events: auto;
+  width: 32px;
+  height: 32px;
+  top: 16px;
+  bottom: auto;
+  left: 16px;
+  right: auto;
+}
+
+.manipulation-arrow.treasure-rotate-arrow:hover {
+  filter: drop-shadow(0px 0px 4px white);
+}
+
+/* Clickable marker on each valid intersection during placeTreasure. */
+.treasure-intersection {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  margin-left: -30px;
+  margin-top: -30px;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 40;
+  animation: glow 2s infinite;
+}
+
+
+/* Selectable supply gems during placeTreasure. */
+#treasure_supply_gems .treasure {
+  cursor: pointer;
+  position: relative; /* anchor the rotate icon to the gem */
+}
+
+
+
+.treasure-tooltip {
+  max-width: 260px;
+}
+
+.treasure-tooltip .treasure {
+  margin: 0 auto 6px;
+}
+
+.treasure-tooltip h3 {
+  margin: 0 0 4px;
+  text-align: center;
+}
+
+.treasure-tooltip ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.player_board_inner {
+  overflow: hidden;
+}
+
+#other_players_kingdoms {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-evenly;
+  flex-wrap: wrap;
+}
+
+.player_view {
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.3);
+  margin: 10px 5px 5px;
+  border: 2px solid black;
+  overflow: hidden;
+}
+
+#other_players_kingdoms .kingdom {
+  transform: scale(0.8);
+  position: relative;
+  transform-origin: top left;
+  transition: all 0.8s ease;
+}
+
+.dominoes-list {
+  background-image: url('img/dominoes_list-2025.webp');
+  width: 713px;
+  height: 243px;
+  max-width: 90vw;
+  max-height: calc(90vw * 243 / 713);
+}
+
+[data-edition="2016"] .dominoes-list  {
+  background-image: url('img/dominoes_list.webp');
+  height: 670px;
+  max-height: calc(90vw * 670 / 713);
+}
+
+
+#moreInfoButton {
+  display: none;
+  float: right;
+  margin-top: 0;
+  color: black;
+}
+
+@media (max-width: 1443px) {
+  #thething.grid-size-7 #info_and_dominoes {
+    flex-direction: column-reverse;
+  }
+  #thething.grid-size-7 #moreInfoButton {
+    display: inline;
+  }
+  #thething.grid-size-7 #more-information {
+    display: none;
+  }
+  #thething.grid-size-7 .info.more-visible #more-information {
+    display: block;
+  }
+}
+
+@media (max-width: 1243px) {
+  #thething.grid-size-5 #info_and_dominoes {
+    flex-direction: column-reverse;
+  }
+  #thething.grid-size-5 #moreInfoButton {
+    display: inline;
+  }
+  #thething.grid-size-5 #more-information {
+    display: none;
+  }
+  #thething.grid-size-5 .info.more-visible #more-information {
+    display: block;
+  }
+}
+
+.territory-score {
+  position: absolute;
+  z-index: 100;
+  width: 100px;
+  height: 100px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: 25px;
+  font-weight: bold;
+  color: white;
+  text-shadow: -2px 0 2px black, 0 2px 2px black, 2px 0 2px black, 0 -2px 2px black;
+  -webkit-filter: drop-shadow(3px 3px 2px black);
+  filter: drop-shadow(3px 3px 2px black);
+  transition: all 1s ease;
+}
+
+.border {
+  position: absolute;
+  z-index: 100;
+  width: 96px;
+  height: 96px;
+  margin: 2px;
+  -webkit-filter: drop-shadow(3px 3px 2px black);
+  filter: drop-shadow(3px 3px 2px black);
+  box-sizing: border-box;
+  -moz-box-sizing: border-box;
+  -webkit-box-sizing: border-box;
+  transition: all 1s ease;
+}
+
+.scoring-hidden {
+  opacity: 0;
+}
+
+.territory-score.scoring-hidden {
+  transform: scale(0.5);
+  transform-origin: bottom;
+}
+
+.thething.spectator #kingdom {
+  display: none;
+}
+
+@media (min-width: 1000px) {
+  .thething.spectator {
+    display: flex;
+    flex-direction: row-reverse;
+  }
+}
+
+.thething.spectator #info_and_dominoes {
+  height: min-content;
+}
+
+/** Move arrows **/
+
+#movetop,#moveleft,#moveright,#movedown {
+  display: block;
+  position: absolute;
+  background-image: url('../../../img/common/arrows.png');
+  width: 32px;
+  height: 32px;
+}
+
+#movetop {
+  top: 0;
+  left: 50%;
+  background-position: 0 32px;
+  transform: translateX(-50%);
+}
+#moveleft {
+  top: 50%;
+  left: 0;
+  background-position: 32px 0;
+  transform: translateY(-50%);
+}
+#moveright {
+  top: 50%;
+  right: 0;
+  background-position: 0 0;
+  transform: translateY(-50%);
+}
+#movedown {
+  bottom: 0;
+  left: 50%;
+  background-position: 32px 32px;
+  transform: translateX(-50%);
+}
+
+.map_arrow.hidden {
+  display: none !important;
+}
+
+.king.hidden {
+  display: none;
+}
+
+.king.dragging_in_progress {
+  pointer-events: none;
+}
+
+#discard_button_mask {
+  position: absolute;
+  z-index: 300;
+  width: 200px;
+  height: 100px;
+  background: rgba(255, 255, 255, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+#info_and_dominoes.scoring #dominoes_displayed {
+  display: none;
+}
+
+#info_and_dominoes.scoring #info {
+  display: none;
+}
+
+#info_and_dominoes.scoring {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.5);
+  margin: 0 10px;
+}
+
+#info_and_dominoes.scoring #scoring_sheet {
+  display: flex;
+}
+
+#scoring_sheet {
+  display: none;
+  width: 400px;
+  flex-direction: column;
+  margin: 10px;
+}
+
+#scoring_sheet > div {
+  display: flex;
+}
+
+#scoring_sheet > div:first-child {
+  justify-content: flex-end;
+}
+
+.score-sheet-player {
+  width: 75px;
+  height: 40px;
+  background-color: antiquewhite;
+  border-left: 1px solid white;
+  font-weight: bold;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  padding: 2px;
+  line-height: 40px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.score-sheet-tile {
+  width: 80px;
+  height: 80px;
+  background-image: url(img/tiles-2025.jpg);
+  background-size: 1050%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-edition="2016"] .score-sheet-tile  {
+  background-image: url(img/tiles.jpg);
+}
+
+
+.score-sheet-tile.reverse {
+  transform: scaleX(-1);
+}
+
+.score-sheet-tile.reverse > span {
+  transform: scaleX(-1);
+}
+
+.score-sheet-tile > span {
+  font-size: 28px;
+  font-weight: bold;
+  color: white;
+  text-shadow: -2px 0 2px black, 0 2px 2px black, 2px 0 2px black, 0 -2px 2px black;
+  width: 80px;
+  height: 80px;
+  line-height: 80px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.3);
+  border-left: 1px solid white;
+}
+
+#score_sheet_total_options {
+  width: 79px;
+  height: 79px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  font-weight: bold;
+  border-left: 1px solid white;
+  border-bottom: 1px solid white;
+  background: burlywood;
+}
+
+#score_sheet_total_options > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+#score_sheet_total_options > div:nth-child(2) {
+  border-top: 1px solid white;
+  width: 100%;
+}
+
+#score_sheet_total_options > div.hidden {
+  display: none;
+}
+
+#score_sheet_total_options span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 78px;
+}
+
+/* blue */
+.score-sheet-total[data-value="0000ff"] {
+  background-image: url(img/tiles-2025.jpg);
+  background-position: -756px -801px;
+  border-left: 1px solid white;
+  border-bottom: 1px solid white;
+}
+
+[data-edition="2016"] .score-sheet-total[data-value="0000ff"]  {
+  background-image: url(img/tiles-2025.jpg);
+}
+
+/* yellow */
+.score-sheet-total[data-value="ffa500"] {
+  background-image: url(img/tiles-2025.jpg);
+  background-position: -674px -801px;
+  border-left: 1px solid white;
+  border-bottom: 1px solid white;
+}
+
+[data-edition="2016"] .score-sheet-total[data-value="ffa500"]  {
+  background-image: url(img/tiles-2025.jpg);
+}
+
+/* pink */
+.score-sheet-total[data-value="ff1493"] {
+  background-image: url(img/tiles-2025.jpg);
+  background-position: -674px -718px;
+  border-left: 1px solid white;
+  border-bottom: 1px solid white;
+}
+
+[data-edition="2016"] .score-sheet-total[data-value="ff1493"]  {
+  background-image: url(img/tiles-2025.jpg);
+}
+
+/* green */
+.score-sheet-total[data-value="008000"] {
+  background-image: url(img/tiles-2025.jpg);
+  background-position: -756px -718px;
+  border-left: 1px solid white;
+  border-bottom: 1px solid white;
+}
+
+[data-edition="2016"] .score-sheet-total[data-value="008000"]  {
+  background-image: url(img/tiles-2025.jpg);
+}
+
+.score-sheet-total {
+  width: 79px;
+  height: 79px;
+  font-size: 28px;
+  font-weight: bold;
+  color: white;
+  text-shadow: -2px 0 2px black, 0 2px 2px black, 2px 0 2px black, 0 -2px 2px black;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background-size: 1063%;
+}
+
+.score-sheet-bonus {
+  font-size: 24px;
+}

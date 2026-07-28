@@ -1,0 +1,60 @@
+{
+    "101": {
+        "name": "The middle Kingdom",
+        "values": [
+            {
+                "name": "Off"
+            },
+            {
+                "name": "On (+10 for castle in the center)",
+                "tmdisplay": "The middle Kingdom"
+            }
+        ]
+    },
+    "102": {
+        "name": "Harmony",
+        "values": [
+            {
+                "name": "Off"
+            },
+            {
+                "name": "On (+5 for complete Kingdom)",
+                "tmdisplay": "Harmony"
+            }
+        ]
+    },
+    "103": {
+        "name": "The Mighty Duel",
+        "values": {
+            "1": {
+                "name": "On (7x7 Kingdom)",
+                "tmdisplay": "The Mighty Duel",
+                "nobeginner": true
+            },
+            "0": {
+                "name": "Off"
+            }
+        },
+        "displaycondition": [
+            {
+                "type": "maxplayers",
+                "value": 2
+            }
+        ],
+        "default": 0
+    },
+    "104": {
+        "name": "The Lost Treasures",
+        "values": {
+            "1": {
+                "name": "On (discover gems on 2x2 squares)",
+                "tmdisplay": "The Lost Treasures",
+                "nobeginner": true
+            },
+            "0": {
+                "name": "Off"
+            }
+        },
+        "default": 1
+    }
+}
