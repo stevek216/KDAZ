@@ -55,3 +55,39 @@ Rust batch encoder) and disjoint game-index ranges under one seed. Measured on 2
 records: load 85.20s -> 0.04s (2290x), python heap 3411 MiB -> 3.1 MiB (1101x), batching
 6,781 -> 58,472 rec/s (8.6x). Batches are bit-identical to the old path across all 11
 tensors. loop.py --games default raised 10k -> 50k (4M records = ~1.8 GB on disk).
+
+=== 2026-07-29 overnight run (vast.ai 5090 pod) ===
+
+First run of the closed loop that actually completes generations. gen4 -> gen10, six
+promotions unattended, then 5 consecutive failures at gen11 ended it.
+
+Throughput on a 5090 (32 cores, 92 GB): 31.1 games/s single process at 256 sims, 33% GPU.
+Batch size is NOT the lever -- throughput is flat across concurrent=1024..8192 (30.9, 30.3,
+28.1, 28.2 games/s). Sharding is: 2 procs = 41.7 games/s at 66% GPU, 3 = 42.9 at 74%. The
+knee is 2. The GPU is launch-bound, not data-starved: a 133k-param net on 13x13 boards
+issues too many tiny kernels, so filling the timeline does not convert into throughput.
+Real fixes would be CUDA graphs or MPS; not worth it yet.
+
+WATCH OUT: nvidia-smi samplers that outlive the run poison the average. A 3-proc run showed
+"32% GPU" over 2125 samples for a 287s run -- the true active-window figure was 74%.
+
+The important result is that the promotion CHAIN is not a ranking. Common-opponent ladder,
+1200 games each vs gen4 (+/-2.8):
+    gen5 55.0 | gen6 59.5 | gen7 57.3 | gen8 57.0 | gen9 58.3 | gen10 60.3
+gen7 and gen8 are worse than gen6. Those were the coin-flip promotions the point-estimate
+gate allowed (50.3%, 50.1% vs their immediate predecessor). Head-to-head, gen10 vs gen6 is
+50.4% +/- 1.8 over 3000 games -- a TIE. So:
+  - real progress: gen4 -> gen6 (+9.5 pts vs gen4)
+  - gen7..gen10: ~3.5 h of GPU time, no measurable gain
+  - the plateau began at gen6, four generations before the loop noticed at gen11
+
+--promote-rule point does not merely risk drift, it spent four generations on it. Next run:
+use lcb, or keep point but raise --eval-games to 2500-3000 (+/-1.8) so genuine ~52% gains
+pass while coin flips are rejected. And rank with a common opponent, never by chaining
+champion-vs-champion win rates.
+
+Untested levers for the plateau, in rough order of expected value: (1) wider replay window
+-- currently the last 2 generations only, and 29 GB of corpora sit unused, costs no
+generation time; (2) capacity -- cap128 failed at 10k games from starvation, but windows
+are 100k now, and a bigger net is the one change that also makes GPU work productive;
+(3) 512 sims -- argued against while data was binding, but data no longer is.
