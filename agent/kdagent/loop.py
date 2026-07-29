@@ -1,7 +1,7 @@
 """The closed self-play training loop: generate -> train -> evaluate -> promote, repeated.
 
 Each attempt: (1) self-play a packed corpus from the current champion (netbatch --overlap);
-(2) train a candidate on the most recent 2 corpora (fresh net, per-epoch checkpoints);
+(2) train a candidate on the most recent --window generations (fresh net, per-epoch checkpoints);
 (3) epoch-sweep every checkpoint against the champion in the batched arena;
 (4) promote the best epoch to runs/gen{N+1}.best.pt iff its win-rate lower confidence
 bound clears 50% (statistically better, not just lucky). Failures regenerate with fresh
@@ -146,6 +146,16 @@ def main():
     ap.add_argument("--eval-sims", dest="eval_sims", type=int, default=None,
                     help="arena sims (default: --sims)")
     ap.add_argument("--epochs", type=int, default=5)
+    ap.add_argument("--window", type=int, default=2,
+                    help="generations of corpora to train on. Measured against gen10 at 50k "
+                         "games/generation: window 2 peaks at epoch 1 then collapses (51.7 -> "
+                         "46.7), window 4 rises to epoch 3 and holds (53.0, stable). Costs no "
+                         "generation time -- it reuses corpora already on disk.")
+    ap.add_argument("--ch", type=int, default=64,
+                    help="conv width of the trained candidate. 128 only pays off with enough "
+                         "data: on a 2-generation window it peaks then collapses to 40.8%%, but "
+                         "on a 4-generation window it is the best arm measured (55.1%%, every "
+                         "epoch from 2 on significantly better than the champion).")
     ap.add_argument("--batch-size", dest="batch_size", type=int, default=512)
     ap.add_argument("--concurrent", type=int, default=2048, help="games in flight (GPU batch)")
     ap.add_argument("--device", default="cuda")
@@ -231,11 +241,14 @@ def main():
             # 2. Train on the most recent 2 generations (fresh net, per-epoch checkpoints).
             # Each entry is one generation's shard list; older state files stored a bare path.
             if not cur["trained"]:
-                window = [p for grp in state["corpora"][-2:]
+                window = [p for grp in state["corpora"][-args.window:]
                           for p in ([grp] if isinstance(grp, str) else grp)]
+                print(f"  window: {len(state['corpora'][-args.window:])} generation(s), "
+                      f"{len(window)} corpus file(s)", flush=True)
                 run_phase("train", [
                     py, "-m", "kdagent.train", "--corpus", *window,
                     "--epochs", str(args.epochs), "--batch-size", str(args.batch_size),
+                    "--ch", str(args.ch),
                     "--seed", str(args.seed + attempt), "--device", args.device,
                     "--out", cur["prefix"]])
                 cur["trained"] = True
@@ -264,6 +277,7 @@ def main():
                 "sims": args.sims, "eval_games": best["n"], "eval_sims": eval_sims,
                 "best_epoch": best["epoch"], "mean": best["mean"], "ci": best["ci"],
                 "promoted": promoted, "corpus": cur["shards"], "rule": args.promote_rule,
+                "window": args.window, "ch": args.ch,
             })
             if promoted:
                 src = f"{cur['prefix']}.epoch{best['epoch']}.pt"
