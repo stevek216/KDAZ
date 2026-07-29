@@ -79,6 +79,31 @@ def run_phase(name: str, cmd: list[str]) -> float:
     return time.time() - t0
 
 
+def run_phase_parallel(name: str, cmds: list[list[str]]) -> float:
+    """Run several commands concurrently; return wall seconds. Fails if any child fails.
+
+    Used to shard self-play: one process leaves the GPU ~2/3 idle, two roughly double GPU
+    utilization for ~1.35x aggregate throughput (measured on a 5090).
+    """
+    print(f"\n=== {name}: {len(cmds)} shards in parallel ===", flush=True)
+    for c in cmds:
+        print(f"    {' '.join(c)}", flush=True)
+    t0 = time.time()
+    procs = [subprocess.Popen(c) for c in cmds]
+    try:
+        rcs = [p.wait() for p in procs]
+    except KeyboardInterrupt:
+        for p in procs:
+            p.terminate()
+        for p in procs:
+            p.wait()
+        raise
+    bad = [i for i, rc in enumerate(rcs) if rc != 0]
+    if bad:
+        raise RuntimeError(f"{name} shard(s) {bad} failed with codes {[rcs[i] for i in bad]}")
+    return time.time() - t0
+
+
 def notify(url: str | None, message: str) -> None:
     if not url:
         return
@@ -124,6 +149,17 @@ def main():
     ap.add_argument("--batch-size", dest="batch_size", type=int, default=512)
     ap.add_argument("--concurrent", type=int, default=2048, help="games in flight (GPU batch)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--shards", type=int, default=1,
+                    help="parallel self-play processes per generation. Shards share --seed and "
+                         "take disjoint game-index ranges, so the union is exactly the games a "
+                         "single process would have played. 2 is the measured sweet spot.")
+    ap.add_argument("--promote-rule", dest="promote_rule", choices=["lcb", "point"],
+                    default="lcb",
+                    help="lcb: promote only if the win-rate lower confidence bound clears 50%% "
+                         "(strict; blocks real ~52%% gains at 1000 eval games). point: promote "
+                         "on the point estimate alone (faster progress, but a coin-flip "
+                         "candidate promotes ~50%% of the time — every generation is kept, so "
+                         "a round-robin arena at the end can still recover the true best).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--runs-dir", dest="runs_dir", default="runs")
     ap.add_argument("--data-dir", dest="data_dir", default="data/selfplay")
@@ -150,12 +186,15 @@ def main():
             cur = state["current"]
             if cur is None or cur["champion"] != champ_gen:
                 state["attempt_no"] += 1
+                stem = f"gen{candidate}_a{state['attempt_no']}"
+                shards = ([str(data_dir / f"{stem}.kdc")] if args.shards == 1 else
+                          [str(data_dir / f"{stem}_s{k}.kdc") for k in range(args.shards)])
                 cur = state["current"] = {
                     "attempt": state["attempt_no"], "champion": champ_gen,
                     "candidate": candidate,
-                    "corpus": str(data_dir / f"gen{candidate}_a{state['attempt_no']}.kdc"),
+                    "shards": shards,
                     "corpus_done": False,
-                    "prefix": str(runs_dir / f"gen{candidate}_a{state['attempt_no']}"),
+                    "prefix": str(runs_dir / stem),
                     "trained": False,
                 }
                 save_state(state, state_path)
@@ -164,20 +203,36 @@ def main():
                   f"(consecutive fails: {state['fails']}) #####", flush=True)
 
             # 1. Generate (a partial corpus from an interrupted run is regenerated).
+            # Shards share one seed stream and split it into disjoint game-index ranges, so the
+            # union is exactly the set of games a single process would have played — no overlap,
+            # no reliance on two seeds happening not to collide.
             if not cur["corpus_done"]:
-                run_phase("generate", [
-                    py, "-m", "kdagent.selfplay", "--backend", "netbatch", "--overlap",
-                    "--ckpt", str(champ_path), "--sims", str(args.sims),
-                    "--games", str(args.games), "--concurrent", str(args.concurrent),
-                    "--seed", str(args.seed + attempt * 1_000_003),
-                    "--out", cur["corpus"], "--device", args.device])
+                gen_seed = args.seed + attempt * 1_000_003
+                n_shards = len(cur["shards"])
+                base, extra = divmod(args.games, n_shards)
+                cmds, first = [], 0
+                for k, out in enumerate(cur["shards"]):
+                    n = base + (1 if k < extra else 0)
+                    cmds.append([
+                        py, "-m", "kdagent.selfplay", "--backend", "netbatch", "--overlap",
+                        "--ckpt", str(champ_path), "--sims", str(args.sims),
+                        "--games", str(n), "--concurrent", str(args.concurrent),
+                        "--seed", str(gen_seed), "--first-game", str(first),
+                        "--out", out, "--device", args.device])
+                    first += n
+                if n_shards == 1:
+                    run_phase("generate", cmds[0])
+                else:
+                    run_phase_parallel("generate", cmds)
                 cur["corpus_done"] = True
-                state["corpora"].append(cur["corpus"])
+                state["corpora"].append(list(cur["shards"]))
                 save_state(state, state_path)
 
-            # 2. Train on the most recent 2 corpora (fresh net, per-epoch checkpoints).
+            # 2. Train on the most recent 2 generations (fresh net, per-epoch checkpoints).
+            # Each entry is one generation's shard list; older state files stored a bare path.
             if not cur["trained"]:
-                window = state["corpora"][-2:]
+                window = [p for grp in state["corpora"][-2:]
+                          for p in ([grp] if isinstance(grp, str) else grp)]
                 run_phase("train", [
                     py, "-m", "kdagent.train", "--corpus", *window,
                     "--epochs", str(args.epochs), "--batch-size", str(args.batch_size),
@@ -197,13 +252,18 @@ def main():
             with open(sweep_json, encoding="utf-8") as f:
                 best = json.load(f)["best"]
 
-            # 4. Promotion gate: win-rate lower confidence bound must clear 50%.
-            promoted = best["mean"] - best["ci"] > 0.5
+            # 4. Promotion gate (see --promote-rule).
+            if args.promote_rule == "point":
+                promoted = best["mean"] > 0.5
+                gate_desc = "point estimate > 50%"
+            else:
+                promoted = best["mean"] - best["ci"] > 0.5
+                gate_desc = "lower bound > 50%"
             state["history"].append({
                 "attempt": attempt, "candidate": candidate, "games": args.games,
                 "sims": args.sims, "eval_games": best["n"], "eval_sims": eval_sims,
                 "best_epoch": best["epoch"], "mean": best["mean"], "ci": best["ci"],
-                "promoted": promoted, "corpus": cur["corpus"],
+                "promoted": promoted, "corpus": cur["shards"], "rule": args.promote_rule,
             })
             if promoted:
                 src = f"{cur['prefix']}.epoch{best['epoch']}.pt"
@@ -218,7 +278,7 @@ def main():
                 state["fails"] += 1
                 print(f"\nNOT PROMOTED: best epoch {best['epoch']} at "
                       f"{best['mean'] * 100:.1f}% +/- {best['ci'] * 100:.1f} "
-                      f"(needs lower bound > 50%) — fail {state['fails']}/{args.max_fails}",
+                      f"(needs {gate_desc}) — fail {state['fails']}/{args.max_fails}",
                       flush=True)
             state["current"] = None
             save_state(state, state_path)

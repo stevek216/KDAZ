@@ -179,7 +179,8 @@ def run_netbatch(args):
         n_games=args.concurrent, total_games=args.games, players=args.players, n_sims=args.sims,
         c_puct=args.c_puct, temp_moves=args.temp_moves, dirichlet_alpha=args.dirichlet_alpha,
         noise_eps=args.noise_eps, seed=args.seed,
-        harmony=args.harmony, middle_kingdom=args.middle_kingdom, packed=packed)
+        harmony=args.harmony, middle_kingdom=args.middle_kingdom, packed=packed,
+        first_game=args.first_game)
     writer = _open_writer(args, packed)
 
     prof = args.profile
@@ -326,8 +327,8 @@ def run_netbatch_overlap(args):
     # ONE seed stream, split into disjoint game-index ranges. Deriving a second base seed
     # instead (the old `seed ^ PHI`) collided with the game-seed stride, so pool B replayed
     # pool A's games and ~48% of every --overlap corpus was exact duplicates.
-    pools = [make_pool(games_a, 0),
-             make_pool(games_b, games_a)]
+    pools = [make_pool(games_a, args.first_game),
+             make_pool(games_b, args.first_game + games_a)]
 
     writer = _open_writer(args, packed)
 
@@ -481,6 +482,13 @@ def main():
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--first-game", dest="first_game", type=int, default=0,
+                    help="index of this run's first game within the seed stream. Shards of one "
+                         "corpus MUST share --seed and use disjoint [--first-game, +--games) "
+                         "ranges: game ids are seed-derived per index, so disjoint ranges are "
+                         "provably distinct games, while separate seeds are not (deriving a "
+                         "second seed is what made pool B replay pool A and half of every "
+                         "corpus duplicates).")
     ap.add_argument("--out", default="data/selfplay/corpus.kdc",
                     help="corpus path; a .jsonl/.json suffix writes the legacy JSON form "
                          "instead of the packed binary corpus")
