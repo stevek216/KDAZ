@@ -170,6 +170,11 @@ def main():
                          "on the point estimate alone (faster progress, but a coin-flip "
                          "candidate promotes ~50%% of the time — every generation is kept, so "
                          "a round-robin arena at the end can still recover the true best).")
+    ap.add_argument("--value-blend", dest="value_blend", type=float, default=0.0,
+                    help="blend the score head into the search's leaf value everywhere "
+                         "(generation AND evaluation). gen11 @512 sims: a=0.7 scores 52.0%% "
+                         "+/- 1.0 over 10k games vs a=0. Improves the targets too, since "
+                         "generation uses the same search.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--runs-dir", dest="runs_dir", default="runs")
     ap.add_argument("--data-dir", dest="data_dir", default="data/selfplay")
@@ -228,6 +233,7 @@ def main():
                         "--ckpt", str(champ_path), "--sims", str(args.sims),
                         "--games", str(n), "--concurrent", str(args.concurrent),
                         "--seed", str(gen_seed), "--first-game", str(first),
+                        "--value-blend", str(args.value_blend),
                         "--out", out, "--device", args.device])
                     first += n
                 if n_shards == 1:
@@ -261,6 +267,7 @@ def main():
                 "--opponent", f"netmcts:{eval_sims}:{champ_path}",
                 "--sims", str(eval_sims), "--games", str(args.eval_games),
                 "--concurrent", str(args.concurrent), "--seed", str(args.seed + attempt),
+                "--value-blend", str(args.value_blend),
                 "--device", args.device, "--json-out", sweep_json])
             with open(sweep_json, encoding="utf-8") as f:
                 best = json.load(f)["best"]

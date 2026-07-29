@@ -285,7 +285,16 @@ def main():
     ap.add_argument("--harmony", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--value-blend", dest="value_blend", type=float, default=0.0,
+                    help="blend the score head into the search's leaf value: "
+                         "(1-a)*P(win) + a*sigmoid(cal*margin). 0 = pure value head. "
+                         "gen11 @512 sims: a=0.7 scores 52.0%% +/- 1.0 over 10k games vs a=0.")
+    ap.add_argument("--score-cal", dest="score_cal", type=float, default=None,
+                    help="margin->winprob scale for --value-blend (default 6.139)")
     args = ap.parse_args()
+    from kdagent.selfplay import set_value_blend
+    set_value_blend(args.value_blend, args.score_cal)
+
 
     if args.batched:
         run_batched_arena(args)

@@ -72,7 +72,13 @@ def main():
                     action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--json-out", dest="json_out", default=None,
                     help="also write the sweep results as JSON (for the training loop)")
+    ap.add_argument("--value-blend", dest="value_blend", type=float, default=0.0,
+                    help="blend the score head into the search's leaf value (see arena.py)")
+    ap.add_argument("--score-cal", dest="score_cal", type=float, default=None,
+                    help="margin->winprob scale for --value-blend (default 6.139)")
     args = ap.parse_args()
+    from kdagent.selfplay import set_value_blend
+    set_value_blend(args.value_blend, args.score_cal)
 
     checkpoints = find_epoch_checkpoints(args.prefix)
     if not checkpoints:
