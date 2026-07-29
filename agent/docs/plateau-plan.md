@@ -25,18 +25,36 @@ arrow.
 Two that *did* work and are already in use: a 4-generation window, and ch=128 (which only pays
 off *with* the wide window — they interact).
 
-## The key unknown
+## Phase 0 results (2026-07-29) — hypothesis A confirmed
 
-The net matches the targets to within 0.157 nats and no amount of capacity or training closes
-that. Two very different explanations remain, and they imply opposite work:
+**D2 — the policy prior is worth 4.7 points.** Running the arena with agent A's policy logits
+zeroed (uniform prior, same value head) scores **45.3% ± 2.2** against the real prior at 512
+sims. So discarding gen11's entire policy costs under 5 points, while training recovers ~2
+points of policy quality per generation — a fraction of a fraction. **Search strength is
+overwhelmingly the value head, and the policy is nearly a passenger.** Every lever tested on
+2026-07-29 (capacity, epochs, sim count) aimed at the policy head; that was the wrong head.
 
-- **A. The prior barely matters.** Search strength may come almost entirely from the *value*
-  head, in which case improving the policy can never improve search, and every hour spent on
-  policy is wasted.
-- **B. The residual is irreducible target noise.** Each visit distribution is one noisy sample
-  of the search's policy (Kingdomino's hidden draw means each search samples different
-  dominoes), so the net is already at the achievable floor and the fix is *less noisy targets*,
-  not better fitting.
+**D1 — the value head HAS been learning.** On 410,642 positions from gen11's own play:
+
+| net | params | winner-acc | corr |
+|-----|-------:|-----------:|-----:|
+| gen0  | 133k | 0.568 | 0.163 |
+| gen11 | 496k | **0.682** | **0.463** |
+
+A prediction that it had stalled was wrong. *Caveat on an earlier number:* gen0 was once
+measured at "90% winner accuracy" — but that was on gen0's **own** corpus, where weak play makes
+games lopsided and easy to call. On gen11-level positions the same net scores 0.568. Value
+accuracy is a function of how close the games are; those figures were never comparable and the
+90% should not be used as a baseline.
+
+So neither head is broken — both have extracted what the current targets can teach. For the
+value head the target is one win/loss label shared across all ~81 positions of a game, and
+Kingdomino's hidden draw means the winner genuinely depends on unseen cards. 68.2% on close
+games between strong players may be near the ceiling *for that target*. Hence: change the
+target, don't grow the net.
+
+**Still open (D3).** Whether the 0.157-nat policy residual is irreducible target noise. Now
+low priority — with the prior worth only 4.7 points, the answer barely changes what we do.
 
 ## Phase 0 — three diagnostics, all local, no pod
 
@@ -64,41 +82,46 @@ the net is already at the floor and hypothesis **B** is confirmed. Needs a way t
 from a packed record's state — `pack::unpack_state` plus a small pyfunction, or reuse
 `core/rebuild.rs`. Only worth building if D1/D2 do not already settle the question.
 
-## Phase 1 — fixes, chosen by what Phase 0 says
+## Phase 1 — everything aims at the evaluator now
 
-Ordered by cost. The first two need **no regeneration** and can run on existing local data.
+D2 reordered this list. Anything that improves the *policy* has a ceiling of roughly 4.7 points
+and is therefore deprioritised; anything that improves the *evaluator* is where the leverage is.
 
-**F1. Sharpen the policy target (free, offline).** Mean max target probability is only 0.580 — a
-soft target teaches a soft prior, which wastes search. Apply a temperature to the stored visit
-distribution at train time (`p^(1/T)`, renormalised, T < 1). Costs one argument in
-`dataset.collate_packed`, needs no new corpora, and can be swept T ∈ {0.7, 0.85, 1.0} tonight.
+**F3a. Blend the score head into the search's leaf value (free — no retrain, no regeneration).**
+The value head predicts win/loss. The **score head** predicts final score margin: dense,
+already trained, loss 0.033 and flat — and search ignores it entirely. Calibrating
+margin → win-prob on held-out positions gives `a = 6.139`, at which the score head alone scores
+**0.675 winner accuracy vs the value head's 0.682**. Two comparably-accurate evaluators derived
+differently, which is the classic setup for an ensemble to beat both. The blend happens purely
+in the Python driver (it already computes the value it hands to `pool.apply()`), so `alpha` is
+the only knob and `alpha=0` is the control. **Cheapest shot at the head that matters.**
 
-**F2. LR schedule (free, offline).** `train.py` uses constant Adam 1e-3 with no decay
-(`train.py:163`). Cosine or step decay over `--epochs`. I over-claimed this as *the* diagnosis
-earlier and had to walk it back — the epoch-9 collapse is ordinary overfitting, not optimiser
-wandering — so treat this as a cheap possible improvement, not a fix for the plateau.
-
-**F3. Blend the MCTS root value into the value target (moderate; needs regeneration).**
-Currently the value target is *only* the terminal game outcome — a single win/loss/draw per
-game, shared across all ~81 positions of that game, which is a very high-variance label. Modern
-AlphaZero variants blend it with the search's backed-up root value, which is far lower variance
-and available for free during generation. Requires: a new field in the packed record (bump
-`FORMAT_VERSION`, +16 B), emit it from `batch_selfplay::commit_move`, and a mixing weight in
-`train.py`. **If D1 shows the value head has stalled, this becomes the top priority** — it
-attacks the value head directly, and the value head is what search actually runs on.
+**F3b. Blend the MCTS root value into the value *target* (moderate; needs regeneration).**
+The value target is *only* the terminal outcome — one win/loss per game, shared across ~81
+positions, in a game whose result depends on unseen cards. The search's backed-up root value is
+a far lower-variance estimate of position quality and is computed during generation, then thrown
+away. Requires a new field in the packed record (bump `FORMAT_VERSION` to 2, +16 B, and keep the
+v1 reader so the 250k-game 512-sim archive stays readable), emitting it from
+`batch_selfplay::commit_move`, and a mixing weight in `train.py`.
 
 **F4. Average over determinizations (larger; search change).** Kingdomino's hidden draw means
-each search samples one deck realisation. Averaging visit counts over several determinizations
-per move would cut target noise at its source. This is the Kingdomino-specific lever nobody has
-pulled, and CLAUDE.md §4 already anticipates it (information-set / PIMC at the root). Only worth
-the effort if D3 shows target noise dominates.
+each search samples one deck realisation, which adds noise to *both* targets. Averaging over
+several determinizations per move cuts it at the source. CLAUDE.md §4 already anticipates this
+(information-set / PIMC at the root).
+
+**F2. LR schedule (free, offline).** Constant Adam 1e-3, no decay (`train.py:163`). I
+over-claimed this as *the* diagnosis earlier and walked it back — the epoch-9 collapse is
+ordinary overfitting, not optimiser wandering. Cheap, speculative, not a plateau fix.
+
+**F1. Sharpen the policy target — DEMOTED.** Mean max target probability is only 0.580, so a
+soft target teaches a soft prior. But D2 caps all policy-side work at ~4.7 points, so this is no
+longer worth doing first despite being free.
 
 ## Suggested order
 
-1. **D1** (2 min) — is the value head stalled?
-2. **D2** (30 min) — does the prior matter at all?
-3. **F1 + F2** (a few hours, offline, existing data) — the two free shots
-4. Then **F3** or **F4**, whichever D1/D2/D3 pointed at
+1. ~~D1, D2~~ — **done**, see above
+2. **F3a** — free, in flight
+3. **F3b** — the real fix if F3a is not enough; needs a pod for regeneration
+4. **F4** if target noise still dominates; **F2/F1** only as cheap extras
 
-Nothing in Phase 0 or F1/F2 needs a pod. Spin one up again only for F3/F4, which require
-regenerating corpora.
+Only F3b and F4 need a pod.
