@@ -91,3 +91,53 @@ Untested levers for the plateau, in rough order of expected value: (1) wider rep
 generation time; (2) capacity -- cap128 failed at 10k games from starvation, but windows
 are 100k now, and a bigger net is the one change that also makes GPU work productive;
 (3) 512 sims -- argued against while data was binding, but data no longer is.
+
+=== 2026-07-29 afternoon: four experiments against the gen11 plateau ===
+
+Setup for all of these: train on gen-N-generated corpora, evaluate against that same champion,
+so only the named variable moves. Numbers are win% with 95% CI.
+
+1. WINDOW x CAPACITY, 2x2 factorial on gen10 data (vs gen10, +/-2.8):
+                 ch=64                        ch=128
+   window 2   51.7  peak ep1 -> 46.7      52.9  peak ep1 -> 40.8
+   window 4   53.0  rises to ep3, holds   55.1  rises to ep3, ep2-5 all significant
+   An INTERACTION, not two effects: capacity alone is worse than useless (ch=128 on a
+   2-generation window collapses harder than ch=64 on the same data), data alone barely clears
+   the control, both together is the best arm measured AND the most stable. Also settles why
+   cap128 failed back at 10k games: starvation, not capacity. w4_ch128.epoch3 was promoted as
+   gen11 (55.1% vs gen10, LCB 52.3).
+
+2. EPOCH COUNT -- 12 epochs, sparse sweep at 2000 games/point (+/-2.2), vs gen11:
+     ep1 48.8 | ep3 44.9 | ep5 52.0 | ep7 46.6 | ep9 39.5 | ep12 44.5
+   Peaks at 5, monotonic collapse after (-5.4 then -7.1, both outside the CIs). --epochs 5 is
+   about right. The "epoch 5 best and still climbing" seen in single loop attempts was the top
+   of a curve, not a truncated rise. NOTE: train.py has NO LR schedule (constant Adam 1e-3), so
+   a 12-epoch run is directly comparable to a 5-epoch one -- no schedule confound.
+
+3. 512 SIMS -- FAILED, and it cost 2x per generation. Phase A showed 512-sim search beats
+   256-sim search head-to-head at gen10 (53.2%, significant), which justified trying it. But
+   playing better does NOT mean teaching better: the loop ran attempts 14-18 at 512 sims,
+   window 4, ch 128, and every one failed. Attempt 18's window was fully 512-sim (no legacy
+   256-sim data) and scored 48.9%. Pooled over the 5 attempts: 50.3% +/- 1.4 over 5000 games,
+   i.e. exactly gen11. Do not retry 512-sim generation without a different reason.
+   METHOD NOTE: comparing two strong agents against a WEAK common opponent compresses their
+   difference (256 and 512 sims both scored ~96% vs a raw net and looked identical). Rank strong
+   agents head-to-head. The mirror-image trap is comparing two nets WITH search on both sides,
+   which masks policy differences -- use raw-vs-raw for that.
+
+4. WHERE THE PLATEAU ACTUALLY IS -- the important result:
+     netmcts:512:gen11 vs RAW gen11   97.2% +/- 0.7
+     netmcts:128:gen11 vs RAW gen11   94.3% +/- 1.0
+     RAW a17.ep5      vs RAW gen11    51.0% +/- 1.5  (4000 games)
+     RAW a16.ep4      vs RAW gen11    50.3% +/- 1.5  (4000 games)
+   The targets contain a 97% improvement over the policy that generated them, and training
+   extracts NONE of it -- confirmed raw-vs-raw, so it is not the arena masking it. This is the
+   AlphaZero fixed point: the net has converged to the best policy its architecture can express,
+   so better targets return the same net. A 97% search-vs-raw gap is very wide (mature setups
+   run 70-80%), which points at too little capacity to represent the search.
+   Next test: ch=256 on the same window, matched against attempt 18's ch=128 (same window, same
+   seed 18) -- if capacity is the ceiling, ch=256 clears 50% raw-vs-raw.
+
+TOOLING NOTE: raw-vs-raw arena runs at ~2400 games/s vs ~15 with 512-sim search. 4000 games
+costs seconds and gives +/-1.5, so policy-quality questions should be asked raw, not through
+search.
