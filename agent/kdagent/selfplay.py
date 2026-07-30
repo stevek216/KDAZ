@@ -250,8 +250,16 @@ def run_netbatch(args):
 # The value head predicts win/loss; the score head predicts final score margin. Both are
 # trained, and on gen11 they are near-equally accurate as evaluators (0.682 vs 0.675 winner
 # accuracy) while being derived from different signals — so blending them beats either alone.
-# Measured on gen11 at 512 sims: alpha=0.7 scores 52.0% +/- 1.0 over 10,000 games against
-# alpha=0 (pure win-prob). Costs nothing: no retraining, no regeneration.
+# Costs nothing: no retraining, no regeneration.
+#
+# Measured on gen11 at 512 sims, alpha=0.75 vs alpha=0: 52.3% +/- 1.8 over 3000 games
+# (2026-07-30). Reproduce with:
+#     python -m kdagent.arena --batched --games 3000 --device cuda \
+#         --a netmcts:512:runs/gen11.best.pt --b netmcts:512:runs/gen11.best.pt \
+#         --value-blend 0.75 --value-blend-b 0.0
+# That A/B was unmeasurable until 2026-07-30: --value-blend was dropped entirely on the
+# single-game path and shared by both agents on the batched one, so a "blend vs no blend"
+# match silently pitted two identical agents against each other. Keep the per-agent split.
 #
 # SCORE_CAL maps predicted margin -> win probability via sigmoid(cal * margin); 6.139 was fitted
 # on 60k held-out gen11 positions. Refit it if the score head's scale ever changes.

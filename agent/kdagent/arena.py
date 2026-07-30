@@ -83,10 +83,11 @@ class NetAgent:
 class NetMctsAgent:
     """AlphaZero-style play: the Python MCTS guided by the net, greedy on root visit counts."""
 
-    def __init__(self, path, n_sims, c_puct=1.5, seed=0, device="cpu"):
+    def __init__(self, path, n_sims, c_puct=1.5, seed=0, device="cpu", value_blend=0.0):
         self.name = f"netmcts{n_sims}:{os.path.basename(path)}"
         self.path, self.n_sims, self.c_puct, self.seed, self.device = (
             path, n_sims, c_puct, seed, device)
+        self.value_blend = value_blend
         self._ev = None
 
     def _ensure(self):
@@ -94,7 +95,7 @@ class NetMctsAgent:
             from .mcts.evaluators import NetEvaluator
             from .net import load_net
             net, _ = load_net(self.path, self.device)
-            self._ev = NetEvaluator(net, device=self.device)
+            self._ev = NetEvaluator(net, device=self.device, value_blend=self.value_blend)
 
     def act(self, g, move_seed):
         self._ensure()
@@ -105,8 +106,11 @@ class NetMctsAgent:
         return int(policy.argmax())
 
 
-def make_agent(spec, seed=0, device="cpu"):
-    """Agent spec: `random` | `mcts:SIMS[:C_PUCT]` | `net:CKPT` | `netmcts:SIMS:CKPT`."""
+def make_agent(spec, seed=0, device="cpu", value_blend=0.0):
+    """Agent spec: `random` | `mcts:SIMS[:C_PUCT]` | `net:CKPT` | `netmcts:SIMS:CKPT`.
+
+    `value_blend` mixes the score head into a netmcts agent's leaf value (see
+    `mcts.evaluators.NetEvaluator`); 0.75 is the measured optimum."""
     if spec == "random":
         return RandomAgent(seed)
     if spec.startswith("mcts:"):
@@ -114,7 +118,8 @@ def make_agent(spec, seed=0, device="cpu"):
         return RolloutMctsAgent(int(parts[1]), float(parts[2]) if len(parts) > 2 else 1.5, seed)
     if spec.startswith("netmcts:"):
         _, sims, path = spec.split(":", 2)
-        return NetMctsAgent(path, int(sims), seed=seed, device=device)
+        return NetMctsAgent(path, int(sims), seed=seed, device=device,
+                            value_blend=value_blend)
     if spec.startswith("net:"):
         return NetAgent(spec[len("net:"):], seed=seed, device=device)
     raise ValueError(f"unknown agent spec: {spec!r}")
@@ -171,10 +176,17 @@ def _stats(score_lists, t0):
     return means, cis, n, time.time() - t0
 
 
-def run_lineup(specs, games, players=2, seed=0, device="cpu", variants=(True, True), tag=""):
+def run_lineup(specs, games, players=2, seed=0, device="cpu", variants=(True, True), tag="",
+               blends=None):
+    """`blends[seat]` is that seat's score-head blend (see `make_agent`); None = all 0."""
     if len(specs) != players:
         raise ValueError(f"need one agent per seat: {len(specs)} specs for {players} players")
-    agents = [make_agent(s, seed=i, device=device) for i, s in enumerate(specs)]
+    if blends is None:
+        blends = [0.0] * players
+    if len(blends) != players:
+        raise ValueError(f"need one blend per seat: {len(blends)} for {players} players")
+    agents = [make_agent(s, seed=i, device=device, value_blend=blends[i])
+              for i, s in enumerate(specs)]
     scores = [[] for _ in range(players)]
     rounds = max(1, round(games / players))
     total, t0 = rounds * players, time.time()
@@ -191,10 +203,17 @@ def run_lineup(specs, games, players=2, seed=0, device="cpu", variants=(True, Tr
     return _stats(scores, t0)
 
 
-def run_match(a_spec, b_spec, games, players=2, seed=0, device="cpu", variants=(True, True), tag=""):
+def run_match(a_spec, b_spec, games, players=2, seed=0, device="cpu", variants=(True, True), tag="",
+              blend_a=0.0, blend_b=0.0):
     specs = [a_spec] + [b_spec] * (players - 1)
-    means, cis, n, secs = run_lineup(specs, games, players, seed, device, variants, tag)
+    blends = [blend_a] + [blend_b] * (players - 1)
+    means, cis, n, secs = run_lineup(specs, games, players, seed, device, variants, tag, blends)
     return means[0], cis[0], n, secs
+
+
+def blend_b(args):
+    """B's blend: `--value-blend-b` if given, else the same alpha as A."""
+    return args.value_blend if args.value_blend_b is None else args.value_blend_b
 
 
 def run_batched_arena(args):
@@ -203,6 +222,7 @@ def run_batched_arena(args):
     ~100x faster than the single-game path. Reports A's score (win 1 / tie 0.5 / loss 0)."""
     import torch
 
+    from kdagent import selfplay as _sp
     from kdagent.net import load_net
     from kdagent.selfplay import _gpu_forward
 
@@ -228,9 +248,12 @@ def run_batched_arena(args):
                            harmony=args.harmony, middle_kingdom=args.middle_kingdom)
     empty_l, empty_v = np.zeros((0, 1), np.float32), np.zeros((0, pc), np.float32)
 
-    def fwd(net, sub):
+    def fwd(net, sub, blend):
+        """`_gpu_forward` reads the blend from a module global, so set it per side here —
+        otherwise both agents share one alpha and a blend-on-vs-off match is unmeasurable."""
         if sub["b"] == 0:
             return empty_l, empty_v
+        _sp.SCORE_BLEND = blend
         logits, value_rel = _gpu_forward(net, sub, device, use_amp)
         return logits.cpu().numpy(), value_rel.cpu().numpy()
 
@@ -239,13 +262,14 @@ def run_batched_arena(args):
 
     a_name, b_name = agent_name(sims_a, path_a), agent_name(sims_b, path_b)
     print(f"{a_name} vs {b_name}  (batched, {args.games} games, "
-          f"concurrent {args.concurrent}, device {device})", flush=True)
+          f"concurrent {args.concurrent}, device {device}, "
+          f"blend A {args.value_blend} / B {blend_b(args)})", flush=True)
 
     t0 = last = time.perf_counter()
     while not pool.done():
         batch = pool.collect()
-        la, va = fwd(net_a, batch["a"])
-        lb, vb = fwd(net_b, batch["b"])
+        la, va = fwd(net_a, batch["a"], args.value_blend)
+        lb, vb = fwd(net_b, batch["b"], blend_b(args))
         pool.apply(la, va, lb, vb)
         if time.perf_counter() - last > 1.0:
             wa, wb, ties, done = pool.stats()
@@ -286,9 +310,12 @@ def main():
     ap.add_argument("--middle-kingdom", dest="middle_kingdom",
                     action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--value-blend", dest="value_blend", type=float, default=0.0,
-                    help="blend the score head into the search's leaf value: "
+                    help="A's blend of the score head into the search's leaf value: "
                          "(1-a)*P(win) + a*sigmoid(cal*margin). 0 = pure value head. "
-                         "gen11 @512 sims: a=0.7 scores 52.0%% +/- 1.0 over 10k games vs a=0.")
+                         "gen11 @512 sims: a=0.75 scores 52.3%% +/- 1.8 over 3000 games vs a=0.")
+    ap.add_argument("--value-blend-b", dest="value_blend_b", type=float, default=None,
+                    help="B's blend, if it should differ from A's. This is what makes a "
+                         "blend-on-vs-off match measurable: --value-blend 0.75 --value-blend-b 0")
     ap.add_argument("--score-cal", dest="score_cal", type=float, default=None,
                     help="margin->winprob scale for --value-blend (default 6.139)")
     args = ap.parse_args()
@@ -302,9 +329,11 @@ def main():
 
     a_name, b_name = make_agent(args.a).name, make_agent(args.b).name
     variants = (args.harmony, args.middle_kingdom)
-    print(f"{a_name} vs {b_name} field ({args.games} games, {args.players}p, device {args.device})")
+    print(f"{a_name} vs {b_name} field ({args.games} games, {args.players}p, device {args.device}, "
+          f"blend A {args.value_blend} / B {blend_b(args)})")
     mean, ci, n, dt = run_match(args.a, args.b, args.games, args.players, args.seed,
-                                args.device, variants, tag=f"{a_name} vs {b_name} ")
+                                args.device, variants, tag=f"{a_name} vs {b_name} ",
+                                blend_a=args.value_blend, blend_b=blend_b(args))
     base = 1.0 / args.players
     print(f"\n{a_name}: {mean * 100:.1f}% +/- {ci * 100:.1f}  "
           f"({n} games, {dt / max(1, n):.2f} s/game, even = {base * 100:.0f}%)")

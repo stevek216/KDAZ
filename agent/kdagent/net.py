@@ -52,8 +52,10 @@ class KingdominoNet(nn.Module):
 
         return LINE_FEATS
 
-    def heads(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor):
-        """board [1, pc·C, 13, 13], lines [8, F], glob [G] -> raw heads."""
+    def heads(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor,
+              with_score: bool = False):
+        """board [1, pc·C, 13, 13], lines [8, F], glob [G] -> raw heads
+        (+ score [pc] when `with_score`)."""
         feat = self.board_conv(board)  # [1, ch, 13, 13]
         place_map = self.place_head(feat)[0]  # [4, 13, 13]
         board_pool = feat.mean(dim=(2, 3))[0]  # [ch]
@@ -64,6 +66,8 @@ class KingdominoNet(nn.Module):
         summary = torch.cat([board_pool, line_pool, glob_emb], dim=-1)  # [3·ch]
         discard_logit = self.discard_head(summary).squeeze(-1)  # scalar
         value_logits = self.value_head(summary)  # [pc]
+        if with_score:
+            return place_map, claim_logits, discard_logit, value_logits, self.score_head(summary)
         return place_map, claim_logits, discard_logit, value_logits
 
     def forward_batch(self, board: torch.Tensor, lines: torch.Tensor, glob: torch.Tensor,
@@ -85,12 +89,16 @@ class KingdominoNet(nn.Module):
             return place_map, claim_logits, discard, value, self.score_head(summary)
         return place_map, claim_logits, discard, value
 
-    def policy_value(self, enc, device: str = "cpu"):
-        """Per-action logits + value for one encoded state (the MCTS leaf interface)."""
+    def policy_value(self, enc, device: str = "cpu", with_score: bool = False):
+        """Per-action logits + value for one encoded state (the MCTS leaf interface).
+
+        `with_score` additionally returns the score head, which the search can blend into its
+        leaf value (see `kdagent.mcts.evaluators.NetEvaluator`)."""
         board = torch.from_numpy(enc.board).reshape(1, self.pc * N_PLANES, STORE, STORE).to(device)
         lines = torch.from_numpy(enc.lines).to(device)
         glob = torch.from_numpy(enc.glob).to(device)
-        place_map, claim_logits, discard_logit, value_logits = self.heads(board, lines, glob)
+        out = self.heads(board, lines, glob, with_score=with_score)
+        place_map, claim_logits, discard_logit, value_logits = out[:4]
 
         acts = enc.actions
         a = len(acts.type_id)
@@ -107,6 +115,8 @@ class KingdominoNet(nn.Module):
         logits = torch.where(t == A_PLACE, place_flat[pidx], logits)
         logits = torch.where(t == A_CLAIM, claim_logits[ltok], logits)
         logits = torch.where(t == A_DISCARD, discard_logit.expand(a), logits)
+        if with_score:
+            return logits, value_logits, out[4]
         return logits, value_logits
 
     def num_params(self) -> int:

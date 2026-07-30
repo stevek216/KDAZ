@@ -43,14 +43,27 @@ class RolloutEvaluator:
 
 class NetEvaluator:
     """Network priors + value. Softmax of the policy logits is the prior; softmax of the
-    seat-relative value head is mapped to an absolute per-seat vector."""
+    seat-relative value head is mapped to an absolute per-seat vector.
 
-    def __init__(self, net, table=None, device: str = "cpu"):
+    `value_blend` mixes the score head into the leaf value, exactly as the batched Rust path
+    does (`kdagent.selfplay._gpu_forward`): (1-a)*P(win) + a*sigmoid(cal*margin). On gen11 at
+    512 sims, a=0.75 scores 52.3% +/- 1.8 over 3000 games against a=0 — free strength, since
+    the score head is already trained and search otherwise ignores it.
+
+    Keeping the two paths in agreement matters: this one backs the web UI and the BGA advisor,
+    and it is the one an A/B is least likely to cover (the batched path is what the arena and
+    the training loop exercise). They are verified to agree to 1e-5 on the same position.
+    """
+
+    def __init__(self, net, table=None, device: str = "cpu",
+                 value_blend: float = 0.0, score_cal: float = 6.139):
         from ..encoder import load_domino_table
 
         self.net = net.to(device).eval()
         self.table = load_domino_table(table)
         self.device = device
+        self.value_blend = float(value_blend)
+        self.score_cal = float(score_cal)
 
     def evaluate(self, game):
         import torch
@@ -58,11 +71,18 @@ class NetEvaluator:
         from ..encoder import encode
 
         es = encode(game, self.table)
+        blend = self.value_blend
         with torch.no_grad():
-            logits, value = self.net.policy_value(es, self.device)
+            out = self.net.policy_value(es, self.device, with_score=blend > 0.0)
+        logits, value = out[0], out[1]
         priors = torch.softmax(logits, dim=-1).cpu().numpy().astype(np.float32)
         pc, to_act = es.player_count, game.to_act()
         rel = torch.softmax(value, dim=-1).cpu().numpy().astype(np.float32)  # seat-relative
+        if blend > 0.0 and pc == 2:
+            score = out[2].float()
+            p_score = float(torch.sigmoid(self.score_cal * (score[0] - score[1])))
+            p = (1.0 - blend) * float(rel[0]) + blend * p_score
+            rel = np.array([p, 1.0 - p], dtype=np.float32)
         absval = np.zeros(pc, dtype=np.float32)
         for k in range(pc):
             absval[(to_act + k) % pc] = rel[k]
