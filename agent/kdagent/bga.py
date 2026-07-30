@@ -62,15 +62,22 @@ def domino_table() -> list[dict]:
     return _TABLE
 
 
+def face_desc(sq: dict) -> str:
+    """One half of a tile, e.g. `lake+1`."""
+    t = TERRAIN_SHORT[sq["terrain"]]
+    return f"{t}+{sq['crowns']}" if sq["crowns"] else t
+
+
 def domino_desc(number: int) -> str:
     """A tile as a human reads it, e.g. `#23 forest/lake+1`."""
     d = domino_table()[number - 1]
+    return f"#{number} {face_desc(d['a'])}/{face_desc(d['b'])}"
 
-    def face(sq):
-        t = TERRAIN_SHORT[sq["terrain"]]
-        return f"{t}+{sq['crowns']}" if sq["crowns"] else t
 
-    return f"#{number} {face(d['a'])}/{face(d['b'])}"
+# Where the tile's second square sits relative to its first, in BGA's rotations
+# (0=+x, 1=-y, 2=-x, 3=+y) — and what that reads as on screen, where +y is up.
+BGA_STEP = [(1, 0), (0, -1), (-1, 0), (0, 1)]
+BGA_DIRECTION = ["to its right", "below it", "to its left", "above it"]
 
 
 class Unsupported(Exception):
@@ -283,7 +290,13 @@ def check_previews(previews: list[dict], snap: dict) -> dict | None:
 
 # --------------------------------------------------------------------------- descriptions
 def describe(action: dict, obs: dict) -> str:
-    """One line a player can act on at the table."""
+    """One line a player can act on at the table.
+
+    A placement names **which half goes where**, not a rotation number. The two flips of a
+    tile occupy the same pair of cells, so "rot 2" vs "rot 0" is the entire difference between
+    two moves that can be points apart — and it is the one part of the advice a player has to
+    translate in their head. Naming the faces removes the translation.
+    """
     kind = action["type"]
     if kind == "claim":
         n = action.get("number")
@@ -291,10 +304,14 @@ def describe(action: dict, obs: dict) -> str:
     if kind == "place":
         cur = obs.get("current_domino") or {}
         num = cur.get("number")
-        tile = domino_desc(num) if num else "the domino"
         delta = action.get("score_delta")
         gain = f" (+{delta})" if delta else ""
-        return f"Place {tile} at ({action['x']},{action['y']}) rot {action['bga_rotation']}{gain}"
+        if not num:
+            return f"Place at ({action['x']},{action['y']}){gain}"
+        d = domino_table()[num - 1]
+        rot = action["bga_rotation"]
+        return (f"Place #{num} — {face_desc(d['a'])} at ({action['x']},{action['y']}), "
+                f"{face_desc(d['b'])} {BGA_DIRECTION[rot]}{gain}")
     if kind == "discard":
         cur = obs.get("current_domino") or {}
         num = cur.get("number")
@@ -302,16 +319,34 @@ def describe(action: dict, obs: dict) -> str:
     return kind
 
 
-def highlight(action: dict) -> dict | None:
-    """Where to draw attention on the BGA page. Claims point at the tile in the draft line;
-    placements point at the two board cells the tile would occupy (BGA renders a clickable
-    `square_<x>_<y>` for every cell with a legal placement)."""
+def highlight(action: dict, obs: dict) -> dict | None:
+    """Where to draw attention on the BGA page, and **in what orientation**.
+
+    Claims point at the tile in the draft line. Placements carry the two cells the tile would
+    occupy, each tagged with the face that lands there, plus the tile number and rotation — so
+    the extension can ghost the real tile art onto the board the way BGA would draw it, and
+    the panel can colour the two cells by terrain. Cells alone are not enough: the two flips
+    of a tile cover exactly the same squares.
+    """
     if action["type"] == "claim" and action.get("number"):
         return {"kind": "domino", "number": action["number"]}
     if action["type"] == "place":
         x, y, rot = action["x"], action["y"], action["bga_rotation"]
-        dx, dy = [(1, 0), (0, -1), (-1, 0), (0, 1)][rot]
-        return {"kind": "cells", "cells": [[x, y], [x + dx, y + dy]], "rotation": rot}
+        dx, dy = BGA_STEP[rot]
+        cur = obs.get("current_domino") or {}
+        num = cur.get("number")
+        faces = domino_table()[num - 1] if num else {"a": None, "b": None}
+        cell = lambda cx, cy, sq: {  # noqa: E731
+            "x": cx, "y": cy,
+            **({"terrain": sq["terrain"], "crowns": sq["crowns"]} if sq else {}),
+        }
+        return {
+            "kind": "cells",
+            "number": num,
+            "rotation": rot,
+            "anchor": [x, y],
+            "cells": [cell(x, y, faces["a"]), cell(x + dx, y + dy, faces["b"])],
+        }
     return None
 
 

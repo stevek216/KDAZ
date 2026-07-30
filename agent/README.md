@@ -59,6 +59,16 @@ In progress (mirrors the Space Base agent, `../../SpaceBase/agent/`).
   (`runs/loop_state.json`), Ctrl+C prints standings, `--notify URL` pings when done (ntfy.sh).
   `--gens N` stops after N promotions; default runs until `--max-fails` (3) consecutive
   failures. e.g. `python -m kdagent.loop --device cuda --notify https://ntfy.sh/my-topic`.
+- **DONE — BGA advisor** (`kdagent/bga.py` + `kdagent/advisor.py`, served by
+  `kdagent/server.py`; the Chrome extension lives in `../advisor/`, spec in
+  `../advisor/DESIGN.md`). Translates a live BoardGameArena table into an engine position
+  (`Game.from_position`, derived and validated in the engine's `core::rebuild`), searches it,
+  and returns ranked advice. Read-only — it never plays. Cross-checks itself against BGA's own
+  legal-placement list *and* its scores on every placement, which is a live differential audit
+  of the placement and scoring rules against the reference implementation. Tested
+  (`kdagent/test_bga.py`): a replica of BGA's backend bookkeeping is driven in lockstep with
+  real games and the translation must reproduce the engine's state at every decision.
+  `python -m kdagent.server --checkpoint gen10.best --sims 400 --device cuda`.
 - **TODO** — root determinization (PIMC) for competitive hidden-info play.
 
 Setup: `python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`,

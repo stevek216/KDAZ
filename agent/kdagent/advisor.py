@@ -46,9 +46,16 @@ def list_checkpoints() -> list[dict]:
 class Advisor:
     """Holds the loaded network and the search budget; scores positions on demand."""
 
-    def __init__(self, checkpoint: str | None = None, sims: int = 256, device: str = "cpu"):
+    def __init__(self, checkpoint: str | None = None, sims: int = 256, device: str = "cpu",
+                 value_blend: float = 0.75):
         self.sims = int(sims)
         self.device = device
+        # Blend the score head into the search's leaf value: 52.3% +/- 1.8 over 3000 games on
+        # gen11 @512 sims, and free (the head is already trained). The advisor builds its own
+        # NetEvaluator rather than going through `arena.make_agent`, so this has to be threaded
+        # explicitly — otherwise the advisor silently advises from a weaker evaluator than the
+        # one every measurement was taken on.
+        self.value_blend = float(value_blend)
         self.checkpoint = None
         self._ev = None
         self._rollout = None
@@ -68,7 +75,7 @@ class Advisor:
         from kdagent.net import load_net
 
         net, _ = load_net(str(path), self.device)
-        self._ev = NetEvaluator(net, device=self.device)
+        self._ev = NetEvaluator(net, device=self.device, value_blend=self.value_blend)
         self.checkpoint = str(path)
         return self.checkpoint
 
@@ -154,7 +161,7 @@ class Advisor:
         for r in recs:
             a = previews[r["index"]]
             r["desc"] = bga.describe(a, obs)
-            r["hl"] = bga.highlight(a)
+            r["hl"] = bga.highlight(a, obs)
             r["action"] = a
             if r["hl"]:
                 # Whether the move belongs to the seat whose kingdom this client renders as
@@ -257,6 +264,11 @@ def recommend(snapshot: dict, advisor: Advisor) -> dict:
 
     out.update(advisor.score(game, meta))
     out["engine_position"] = meta["position"]
+    # BGA commits a staged placement when the player picks their next tile, so the claim is
+    # being advised on a board that includes a placement not yet sent to the server. Say so:
+    # the advice is conditional on it, and a player who changes their mind must re-read.
+    if snapshot.get("staged_placement"):
+        out["staged_placement"] = snapshot["staged_placement"]
     # BGA ships its own legal-placement list with scores; disagreement means the advice may
     # be off-menu or mis-valued, and the panel must say so.
     try:

@@ -8,7 +8,7 @@
 
 use rand::Rng;
 
-use crate::components::{domino, DominoDef, DominoId};
+use crate::components::{domino, DominoDef, DominoId, NO_DOMINO};
 use crate::core::action::{Action, Decision};
 use crate::core::state::{GameState, Phase, Slot, LINE, MAX_PLAYERS, NO_OWNER};
 use crate::rules::place::{cell_of, legal_placements};
@@ -305,6 +305,10 @@ fn complete_line(gs: &mut GameState) {
         domino: gs.draw_buf[i],
         owner: NO_OWNER,
     });
+    // Clear the buffer, not just the count: leaving the consumed ids behind would make two
+    // states that are the same *position* compare unequal, which breaks state equality for
+    // anything that dedups or hashes states (the position rebuild in `rebuild.rs` relies on it).
+    gs.draw_buf = [NO_DOMINO; LINE];
     gs.draw_count = 0;
     if gs.current_line.iter().all(|s| !s.is_filled()) {
         gs.current_line = line;
@@ -322,6 +326,9 @@ fn apply_start_claim(gs: &mut GameState, slot: u8) {
         gs.to_act = gs.claim_order[gs.turn_cursor as usize];
     } else {
         // Starting round done; draw the second line (becomes next_line), then play begins.
+        // Clear the order too — it is setup-only scratch, and leaving it behind would make
+        // two identical positions compare unequal (see the note in `complete_line`).
+        gs.claim_order = [0; LINE];
         gs.phase = Phase::Draw;
     }
 }
@@ -380,6 +387,7 @@ fn end_round(gs: &mut GameState) {
     gs.round += 1;
     if gs.current_line.iter().all(|s| !s.is_filled()) {
         gs.phase = Phase::GameOver; // the final place-only round just finished
+        gs.to_act = 0; // nobody is on the clock; canonical so equal positions compare equal
     } else if gs.remaining > 0 {
         gs.phase = Phase::Draw; // draw the next line into next_line, then play
     } else {

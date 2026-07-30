@@ -12,6 +12,12 @@
 //!   `legal_actions()` (JSON), `apply(index)`, `chance_outcomes()` (JSON), `apply_chance()`
 //!   (sample via the game's RNG), `apply_chance_index(i)`, `clone()`, `terminal_value()`,
 //!   `observation()` (JSON).
+//! - `Game.from_position(json, seed=0)` / `Game.to_position()` — start from an **observed**
+//!   position instead of a seed, and project one back. This is what lets the BGA advisor
+//!   (`advisor/DESIGN.md`) hand the search a live table; the derivation and its validation
+//!   live in the engine (`core::rebuild`), not here.
+//! - `Game.action_previews()` — `legal_actions()` plus what a human needs to execute the
+//!   move at a table: BGA's `(x, y, rotation)` and the score each placement would produce.
 //! - `domino_table()` — JSON of all 48 dominoes (the static join target for ids).
 
 #![allow(clippy::useless_conversion)] // PyO3 codegen on fallible methods (known false positive)
@@ -23,7 +29,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use numpy::ndarray::{Array2, Array3, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
-use pyo3::exceptions::PyIndexError;
+use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -32,8 +38,9 @@ use serde_json::{json, Value};
 
 use kingdomino_engine::components::{domino, Square, DOMINOES};
 use kingdomino_engine::core::{
-    apply_action, apply_chance, chance_outcomes, current_decision, legal_actions, new_game_with,
-    terminal_value, Action, Board, Decision, GameState, Phase, Variants, CENTER,
+    apply_action, apply_chance, chance_outcomes, current_decision, from_position, legal_actions,
+    new_game_with, place_to_bga, terminal_value, to_position, Action, Board, Decision, GameState,
+    Phase, PlacedDomino, PositionSpec, SpecPhase, SpecSlot, Variants, CENTER, LINE,
 };
 use kingdomino_engine::rules::{cell_of, score_board};
 
@@ -182,6 +189,166 @@ pub(crate) fn legal_json(buf: &[Action]) -> String {
     Value::Array(arr).to_string()
 }
 
+// =====================================================================================
+// Observed-position bridge (the advisor's entry point)
+// =====================================================================================
+
+/// Parse the `{"number": n, "owner": s}` (or `null`) slot form the advisor speaks.
+fn slot_from_json(v: &Value) -> PyResult<SpecSlot> {
+    if v.is_null() {
+        return Ok(SpecSlot::EMPTY);
+    }
+    let o = v
+        .as_object()
+        .ok_or_else(|| PyValueError::new_err("draft-line slot must be an object or null"))?;
+    let num = |k: &str| -> PyResult<Option<u8>> {
+        match o.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(x) => x
+                .as_u64()
+                .map(|n| Some(n as u8))
+                .ok_or_else(|| PyValueError::new_err(format!("slot field {k} must be a number"))),
+        }
+    };
+    Ok(SpecSlot {
+        number: num("number")?,
+        owner: num("owner")?,
+    })
+}
+
+fn line_from_json(v: Option<&Value>, what: &str) -> PyResult<[SpecSlot; LINE]> {
+    let Some(v) = v else {
+        return Ok([SpecSlot::EMPTY; LINE]);
+    };
+    let arr = v
+        .as_array()
+        .ok_or_else(|| PyValueError::new_err(format!("{what} must be an array")))?;
+    if arr.len() > LINE {
+        return Err(PyValueError::new_err(format!(
+            "{what} has {} slots, at most {LINE} allowed",
+            arr.len()
+        )));
+    }
+    let mut out = [SpecSlot::EMPTY; LINE];
+    for (i, s) in arr.iter().enumerate() {
+        out[i] = slot_from_json(s)?;
+    }
+    Ok(out)
+}
+
+/// Build a [`PositionSpec`] from the advisor's JSON. Coordinates are engine backing-store
+/// cells — the caller (`kdagent.bga`) has already mapped BGA's castle-relative `(x, y)`
+/// through the engine's own conversion helpers, so no geometry is reinvented here.
+fn spec_from_json(v: &Value) -> PyResult<PositionSpec> {
+    let bad = |m: &str| PyValueError::new_err(m.to_string());
+    let obj = v
+        .as_object()
+        .ok_or_else(|| bad("position must be a JSON object"))?;
+    let player_count = obj
+        .get("player_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bad("position needs player_count"))? as u8;
+    let variants = match obj.get("variants") {
+        Some(x) => Variants {
+            harmony: x.get("harmony").and_then(Value::as_bool).unwrap_or(false),
+            middle_kingdom: x
+                .get("middle_kingdom")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        },
+        None => Variants::MIGHTY_DUEL,
+    };
+    let phase = match obj.get("phase").and_then(Value::as_str) {
+        Some("start_claim") => SpecPhase::StartClaim,
+        Some("place") => SpecPhase::Place,
+        Some("claim") => SpecPhase::Claim,
+        Some("game_over") => SpecPhase::GameOver,
+        other => {
+            return Err(bad(&format!(
+                "position needs phase = start_claim|place|claim|game_over (got {other:?})"
+            )))
+        }
+    };
+    let mut placed: Vec<Vec<PlacedDomino>> = Vec::new();
+    for seat in obj
+        .get("seats")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("position needs a seats array"))?
+    {
+        let tiles = seat
+            .get("placed")
+            .and_then(Value::as_array)
+            .ok_or_else(|| bad("each seat needs a placed array"))?;
+        let mut out = Vec::with_capacity(tiles.len());
+        for t in tiles {
+            let f = |k: &str| -> PyResult<u8> {
+                t.get(k)
+                    .and_then(Value::as_u64)
+                    .map(|n| n as u8)
+                    .ok_or_else(|| bad(&format!("placed domino needs {k}")))
+            };
+            out.push(PlacedDomino {
+                number: f("number")?,
+                r: f("r")?,
+                c: f("c")?,
+                rot: f("rot")?,
+            });
+        }
+        placed.push(out);
+    }
+    let discarded = match obj.get("discarded") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(x) => x
+            .as_array()
+            .ok_or_else(|| bad("discarded must be an array"))?
+            .iter()
+            .map(|n| {
+                n.as_u64()
+                    .map(|n| n as u8)
+                    .ok_or_else(|| bad("bad discard"))
+            })
+            .collect::<PyResult<Vec<u8>>>()?,
+    };
+    Ok(PositionSpec {
+        player_count,
+        variants,
+        placed,
+        current_line: line_from_json(obj.get("current_line"), "current_line")?,
+        next_line: line_from_json(obj.get("next_line"), "next_line")?,
+        discarded,
+        phase,
+        to_act: obj.get("to_act").and_then(Value::as_u64).map(|n| n as u8),
+    })
+}
+
+fn spec_json(spec: &PositionSpec) -> Value {
+    let slot = |s: &SpecSlot| match s.number {
+        None if s.owner.is_none() => Value::Null,
+        _ => json!({ "number": s.number, "owner": s.owner }),
+    };
+    let phase = match spec.phase {
+        SpecPhase::StartClaim => "start_claim",
+        SpecPhase::Place => "place",
+        SpecPhase::Claim => "claim",
+        SpecPhase::GameOver => "game_over",
+    };
+    json!({
+        "player_count": spec.player_count,
+        "variants": { "harmony": spec.variants.harmony,
+                      "middle_kingdom": spec.variants.middle_kingdom },
+        "phase": phase,
+        "to_act": spec.to_act,
+        "seats": spec.placed.iter().map(|tiles| json!({
+            "placed": tiles.iter().map(|t| json!({
+                "number": t.number, "r": t.r, "c": t.c, "rot": t.rot
+            })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "current_line": spec.current_line.iter().map(slot).collect::<Vec<_>>(),
+        "next_line": spec.next_line.iter().map(slot).collect::<Vec<_>>(),
+        "discarded": spec.discarded,
+    })
+}
+
 /// A thin, cheaply-clonable handle around one `GameState` plus its sampling RNG.
 #[pyclass]
 pub struct Game {
@@ -218,6 +385,81 @@ impl Game {
         };
         g.refresh();
         g
+    }
+
+    /// Build a game from an **observed position** (JSON, schema in `kdagent.bga`) rather than
+    /// from a seed — the advisor's entry point into the engine. Raises `ValueError` with the
+    /// engine's own explanation when the observation is not a state this game can be in;
+    /// that refusal is deliberate (a subtly wrong position gives confidently wrong advice).
+    #[staticmethod]
+    #[pyo3(signature = (position, seed = 0))]
+    fn from_position(position: &str, seed: u64) -> PyResult<Game> {
+        let v: Value = serde_json::from_str(position)
+            .map_err(|e| PyValueError::new_err(format!("position is not valid JSON: {e}")))?;
+        let spec = spec_from_json(&v)?;
+        let gs = from_position(&spec)
+            .map_err(|e| PyValueError::new_err(format!("cannot rebuild this position: {e}")))?;
+        let mut g = Game {
+            gs,
+            rng: ChaCha8Rng::seed_from_u64(seed),
+            options: Vec::new(),
+        };
+        g.refresh();
+        Ok(g)
+    }
+
+    /// The inverse: this game's state as an observed position. Round-trips through
+    /// `from_position` (engine test `round_trip_at_every_node`), so it doubles as the way to
+    /// hand a live position to another process. `None` at a chance node, which has no
+    /// observable counterpart at a table.
+    fn to_position(&self) -> Option<String> {
+        to_position(&self.gs).map(|s| spec_json(&s).to_string())
+    }
+
+    /// Per-action detail the advisor needs, aligned to `legal_actions()`: for a placement,
+    /// BGA's own `(x, y, rotation)` so the recommendation can be executed at the table, plus
+    /// the acting seat's score **after** the move. BGA sends the same score in its
+    /// `placementPreviews` args, so the two can be compared live — a running audit of the
+    /// scoring rules against the reference implementation, for free, on every placement.
+    fn action_previews(&self) -> String {
+        let seat = self.gs.to_act as usize;
+        let before = score_board(&self.gs.boards[seat], self.gs.variants);
+        let arr: Vec<Value> = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                let mut v = action_json(a, i);
+                match a {
+                    Action::Place { anchor, rot } => {
+                        let (x, y, rotation) = place_to_bga(anchor, rot);
+                        let mut after = self.gs;
+                        apply_action(&mut after, a);
+                        let sb = score_board(&after.boards[seat], after.variants);
+                        v["x"] = json!(x);
+                        v["y"] = json!(y);
+                        v["bga_rotation"] = json!(rotation);
+                        v["score"] = json!(sb.crown_score);
+                        v["score_total"] = json!(sb.total);
+                        v["score_delta"] = json!(sb.crown_score as i32 - before.crown_score as i32);
+                        v["harmony"] = json!(sb.harmony);
+                        v["middle_kingdom"] = json!(sb.middle_kingdom);
+                        v["largest_territory"] = json!(sb.largest_territory);
+                    }
+                    Action::Claim { slot } => {
+                        let line = if self.gs.phase == Phase::StartClaim {
+                            &self.gs.current_line
+                        } else {
+                            &self.gs.next_line
+                        };
+                        v["number"] = json!(line[slot as usize].domino as u16 + 1);
+                    }
+                    _ => {}
+                }
+                v
+            })
+            .collect();
+        Value::Array(arr).to_string()
     }
 
     fn player_count(&self) -> u8 {

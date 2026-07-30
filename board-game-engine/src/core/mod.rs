@@ -5,11 +5,16 @@
 //! self-play games in parallel. See `docs/engine-design.md` §1, §3–§6.
 
 pub mod action;
+pub mod rebuild;
 pub mod setup;
 pub mod state;
 pub mod turn;
 
 pub use action::{Action, Decision};
+pub use rebuild::{
+    cell_from_xy, from_position, place_to_bga, rot_from_bga, rot_to_bga, to_position, xy_from_cell,
+    PlacedDomino, PositionSpec, RebuildError, SpecPhase, SpecSlot,
+};
 pub use setup::{new_game, new_game_with};
 pub use state::Variants;
 pub use state::{

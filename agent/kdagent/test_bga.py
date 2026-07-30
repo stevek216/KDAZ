@@ -233,6 +233,54 @@ def test_bga_preview_oracle_agrees_with_the_engine():
     fail("no placement decision with enough options found")
 
 
+def test_staged_placement_is_advised_as_the_claim_that_follows():
+    """BGA merges place+claim into one action when the placement is staged first: the server
+    state stays `placeDomino` while the player is already choosing their next tile. The page
+    agent reports the position as it WILL be — tile placed, decision = claim — so this checks
+    that such a snapshot rebuilds into exactly the state the engine reaches after the
+    placement is applied.
+    """
+    checked = 0
+    for seed in range(4):
+        for game, snap in _drive(seed):
+            if game.phase() != "place":
+                continue
+            obs = json.loads(game.observation())
+            number = obs["current_domino"]["number"]
+            # Only meaningful when a claim follows: the final round commits standalone.
+            if not any(s and s.get("domino") is not None and s.get("owner") is None
+                       for s in obs["next_line"]):
+                continue
+            for p in json.loads(game.action_previews()):
+                if p["type"] != "place":
+                    continue
+                # What the page agent sends once the player stages this placement.
+                staged = json.loads(json.dumps(snap))
+                staged["state"] = "chooseDomino"
+                staged["dominoes"][str(number)] = {
+                    "location": "KINGDOM", "owner": staged["active_bga"],
+                    "x": p["x"], "y": p["y"], "rotation": p["bga_rotation"]}
+                rebuilt, _ = bga.build_game(staged)
+
+                # The engine's own state after making that placement.
+                expected = game.clone()
+                expected.apply(p["index"])
+                assert rebuilt.phase() == expected.phase() == "claim"
+                assert rebuilt.to_act() == expected.to_act()
+                assert rebuilt.round() == expected.round()
+                a = json.loads(expected.observation())
+                b = json.loads(rebuilt.observation())
+                assert b["seats"] == a["seats"], "the staged tile is not on the board"
+                assert b["scores"] == a["scores"]
+                assert b["remaining"] == a["remaining"]
+                assert json.loads(rebuilt.legal_actions()) == json.loads(expected.legal_actions())
+                checked += 1
+                break
+            if checked >= 12:
+                return
+    assert checked >= 12, f"expected staged placements to check, saw {checked}"
+
+
 def test_unsupported_tables_are_named_not_guessed():
     _, snap = next(_drive(0))
     with raises(bga.Unsupported, match="Mighty Duel"):
@@ -287,21 +335,63 @@ def test_descriptions_and_highlights_are_actionable():
         if game.phase() != "place":
             continue
         obs = json.loads(game.observation())
+        num = obs["current_domino"]["number"]
+        faces = bga.domino_table()[num - 1]
         for p in json.loads(game.action_previews()):
             text = bga.describe(p, obs)
-            hl = bga.highlight(p)
+            hl = bga.highlight(p, obs)
             if p["type"] == "place":
                 assert f"({p['x']},{p['y']})" in text
                 assert hl["kind"] == "cells" and len(hl["cells"]) == 2
-                # The two highlighted cells are exactly the tile's two squares.
-                (x1, y1), (x2, y2) = hl["cells"]
-                assert (x1, y1) == (p["x"], p["y"])
-                assert bga.cell_from_xy(x2, y2) != bga.cell_from_xy(x1, y1)
-                assert abs(x1 - x2) + abs(y1 - y2) == 1
+                assert hl["number"] == num and hl["anchor"] == [p["x"], p["y"]]
+                # The two cells are the tile's two squares, each tagged with the face that
+                # lands on it: square `a` on the anchor, `b` toward the rotation.
+                c1, c2 = hl["cells"]
+                assert (c1["x"], c1["y"]) == (p["x"], p["y"])
+                assert abs(c1["x"] - c2["x"]) + abs(c1["y"] - c2["y"]) == 1
+                assert (c1["terrain"], c1["crowns"]) == (faces["a"]["terrain"], faces["a"]["crowns"])
+                assert (c2["terrain"], c2["crowns"]) == (faces["b"]["terrain"], faces["b"]["crowns"])
             elif p["type"] == "claim":
                 assert text.startswith("Claim #")
                 assert hl["kind"] == "domino"
         return
+
+
+def test_a_tile_and_its_flip_are_told_apart():
+    """The bug this guards: two placements that cover the SAME pair of cells differ only in
+    which half goes where. If the description or the highlight cannot distinguish them, the
+    advice is ambiguous exactly when the choice matters most."""
+    for game, _ in _drive(4, moves=200):
+        if game.phase() != "place":
+            continue
+        obs = json.loads(game.observation())
+        d = bga.domino_table()[obs["current_domino"]["number"] - 1]
+        if d["a"] == d["b"]:
+            continue  # a symmetric tile has no "which way round"
+        places = [p for p in json.loads(game.action_previews()) if p["type"] == "place"]
+        # Group by the unordered pair of cells covered; any group of two is a flip pair.
+        by_cells: dict = {}
+        for p in places:
+            cells = bga.highlight(p, obs)["cells"]
+            key = tuple(sorted((c["x"], c["y"]) for c in cells))
+            by_cells.setdefault(key, []).append(p)
+        flips = [g for g in by_cells.values() if len(g) == 2]
+        if not flips:
+            continue
+        for one, other in flips:
+            assert bga.describe(one, obs) != bga.describe(other, obs), "flips read identically"
+            h1, h2 = bga.highlight(one, obs), bga.highlight(other, obs)
+            assert h1["rotation"] != h2["rotation"]
+            # One option anchors on the cell the other fills second, so `cells[0]` of one and
+            # `cells[1]` of the other are the same physical square...
+            assert (h1["cells"][0]["x"], h1["cells"][0]["y"]) == (
+                h2["cells"][1]["x"], h2["cells"][1]["y"])
+            # ...and that square receives a different face under each. That difference is the
+            # entire content of the orientation preview.
+            assert (h1["cells"][0]["terrain"], h1["cells"][0]["crowns"]) != (
+                h2["cells"][1]["terrain"], h2["cells"][1]["crowns"])
+        return
+    fail("no flip pair of an asymmetric tile found — widen the search")
 
 
 if __name__ == "__main__":
@@ -310,10 +400,12 @@ if __name__ == "__main__":
         test_snapshot_translation_matches_the_engine_all_game,
         test_discards_are_carried_through_the_snapshot,
         test_bga_preview_oracle_agrees_with_the_engine,
+        test_staged_placement_is_advised_as_the_claim_that_follows,
         test_unsupported_tables_are_named_not_guessed,
         test_coordinate_helpers_match_the_engine,
         test_capture_errors_are_distinguishable_from_unsupported_tables,
         test_descriptions_and_highlights_are_actionable,
+        test_a_tile_and_its_flip_are_told_apart,
     ):
         fn()
         print(f"  {fn.__name__} OK")

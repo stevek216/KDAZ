@@ -421,3 +421,46 @@ This is BGA's ranking: `player_score`, then
    (chance-node handling + determinization), self-play corpus, trainer, arena.
 ```
 
+
+---
+
+## 10. Rebuilding a position from an observation (`core/rebuild.rs`)
+
+Self-play always *grows* a state from `new_game` forward, so for a long time the engine had no
+way to start from the middle. The BGA advisor (`../advisor/DESIGN.md`) needs exactly that: it
+watches a live table, sees a position, and must hand the search a state that plays on
+identically.
+
+`from_position(&PositionSpec) -> Result<GameState, RebuildError>` is that entry point, and it
+lives in the **engine** rather than in the advisor because working out whose turn it is, which
+king is acting and what is left in the deck are *rules* answers (CLAUDE §3: the UI never
+reimplements a rule).
+
+**Supplied** — only what is directly observable at a table: each seat's placed dominoes with
+anchor and rotation, the two draft lines with their claims, the discard pile, and which
+decision is pending (`SpecPhase`, since `Place` and `Claim` leave the same footprint on the
+board). **Derived** — `remaining` (`FULL_DECK` minus everything anyone has seen; sound because
+the draw is a chance node over *membership* only, §6), `round` (from how many lines have been
+drawn), `turn_cursor` (a resolved tile leaves the line, so the acting king is the first slot
+still holding one), `to_act`, and `claim_order` (2p is always BGA's snake `A,B,B,A`, so one
+observation fixes the whole order).
+
+**A blank `SpecSlot.number` means "already resolved this round"** — that is the signal the
+cursor derivation reads, and it is exactly what BGA shows, since a tile leaves the line the
+moment it is placed or discarded.
+
+Every derivation is cross-checked against an independent one and a mismatch is a hard
+`RebuildError`, never a silently-wrong state: advice computed from a subtly wrong position
+looks exactly as confident as advice computed from a right one. In particular a `DeckGap`
+error catches the one thing an observer genuinely cannot recover — a tile discarded before it
+started watching, which BGA never re-sends.
+
+`to_position` is the inverse, lossy in exactly one place (the resolved slots of the current
+line come back blank, because that is all anyone watching can know). The pair round-trips at
+every node of random games, and a rebuilt state forked mid-game plays to the same result as
+the original — the two tests that make the whole advisor trustworthy.
+
+This module also owns the BGA coordinate mapping (`cell_from_xy`, `rot_from_bga`,
+`place_to_bga`): castle-relative `(x, y)` with `+y` **up** the screen becomes
+`row = CENTER - y`, `col = CENTER + x`, so the engine's row-major grid renders exactly as the
+table looks.

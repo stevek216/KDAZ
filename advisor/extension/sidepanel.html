@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kingdomino advisor</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.45 system-ui, sans-serif; margin: 0; padding: 10px 12px; }
+  h1 { font-size: 14px; margin: 0 0 6px; }
+  #status { font-size: 12px; opacity: .75; margin-bottom: 8px; }
+  #status.err { color: #d33; opacity: 1; }
+  section { margin-top: 12px; }
+  section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+               opacity: .6; margin: 0 0 4px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .row .name { width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { flex: 1; height: 10px; background: rgba(128,128,128,.2); border-radius: 5px; overflow: hidden; }
+  .bar > div { height: 100%; background: #4a90d9; }
+  .row.acting .name { font-weight: 600; }
+  .rec { margin: 6px 0; padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.08); }
+  .rec.top { outline: 2px solid #4a90d9; }
+  .rec .desc { font-weight: 600; }
+  .rec .meta { font-size: 11px; opacity: .7; }
+  .rec .bar { margin-top: 4px; }
+  #pv { font-size: 11px; opacity: .8; margin: 0; padding-left: 18px; }
+  #pv li { margin: 1px 0; }
+  #empty { opacity: .6; margin-top: 24px; text-align: center; }
+
+  /* controls */
+  #controls { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  #controls button, #controls select, #controls input {
+    font: inherit; padding: 2px 8px; border-radius: 5px; color: inherit;
+    border: 1px solid rgba(128,128,128,.4); background: transparent; cursor: pointer; }
+  #controls button.active { background: #4a90d9; color: #fff; border-color: #4a90d9; }
+  #controls button:disabled { opacity: .4; cursor: default; }
+  #sims-custom, #server { cursor: text; }
+  #sims-custom { width: 60px; }
+  #server { width: 150px; }
+
+  /* banners: each names one specific reason the advice cannot be trusted */
+  .warn { font-weight: 600; font-size: 12px; border-radius: 6px; padding: 6px 8px;
+          margin-bottom: 8px; overflow-wrap: anywhere; }
+  .warn.amber { background: rgba(232,161,60,.15); border: 1px solid #e8a13c; color: #e8a13c; }
+  .warn.red { background: rgba(211,51,51,.12); border: 1px solid #d33; color: #d33; }
+
+  /* the reconstructed kingdoms — what the advisor believes the table looks like */
+  .kingdom { margin: 6px 0 2px; }
+  .kingdom .label { font-size: 11px; opacity: .85; margin-bottom: 2px; }
+  .kingdom.acting .label { font-weight: 700; opacity: 1; }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; width: 154px; }
+  .sq { aspect-ratio: 1; border-radius: 2px; background: rgba(128,128,128,.13);
+        font-size: 8px; line-height: 1; display: flex; align-items: center;
+        justify-content: center; color: rgba(0,0,0,.65); }
+  .sq.castle { background: #8d8d8d; color: #fff; }
+  .sq.t0 { background: #e8c95a; } /* wheat */
+  .sq.t1 { background: #3f7d3f; } /* forest */
+  .sq.t2 { background: #4a90d9; } /* lake */
+  .sq.t3 { background: #8fc45a; } /* grassland */
+  .sq.t4 { background: #9a7b4f; } /* swamp */
+  .sq.t5 { background: #5a5a5a; color: #fff; } /* mine */
+  /* A proposed square: the recommended tile's own terrain, marked as not-yet-played. */
+  .sq.hl { outline: 2px solid #ffd54a; outline-offset: -2px;
+           box-shadow: 0 0 6px 1px rgba(255,213,74,.8); }
+  .lines { font-size: 11px; margin-top: 6px; }
+  .lines .lrow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
+  .lines .own { font-weight: 700; }
+
+  #dump-row { display: flex; gap: 6px; align-items: baseline; margin-top: 14px;
+              padding-top: 8px; border-top: 1px solid rgba(128,128,128,.2); }
+  #dump-row button { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 5px;
+              border: 1px solid rgba(128,128,128,.4); background: transparent;
+              color: inherit; cursor: pointer; opacity: .75; }
+  #dump-status { font-size: 11px; opacity: .8; overflow-wrap: anywhere; }
+  #dump-status.ok { color: #2fb04a; }
+  #dump-status.err { color: #d33; }
+  .lane { font-size: 11px; opacity: .55; margin-top: 10px; }
+</style>
+</head>
+<body>
+<h1>Kingdomino advisor</h1>
+<div id="controls">
+  <span style="opacity:.6">sims</span>
+  <button data-sims="0">raw</button>
+  <button data-sims="128">128</button>
+  <button data-sims="400">400</button>
+  <button data-sims="1200">1200</button>
+  <input id="sims-custom" type="number" min="0" step="1" placeholder="n">
+  <button id="sims-set">set</button>
+  <select id="checkpoint" title="Which trained network gives the advice"></select>
+  <input id="server" type="text" placeholder="http://localhost:8000"
+         title="Local advisor server (kdagent.server)">
+  <button id="server-set">use</button>
+</div>
+<div id="status">waiting for the game page&hellip;</div>
+<div id="unsupported" class="warn amber" hidden></div>
+<div id="capture" class="warn red" hidden></div>
+<div id="unhandled" class="warn amber" hidden></div>
+<div id="legality" class="warn red" hidden></div>
+<div id="scorecheck" class="warn amber" hidden></div>
+
+<div id="content" hidden>
+  <section><h2>Advising</h2><div id="who"></div></section>
+  <section><h2>Win probability</h2><div id="value"></div></section>
+  <section><h2 id="recs-h">Recommended</h2><div id="recs"></div></section>
+  <section><h2>What the advisor sees</h2>
+    <div id="ctx" style="font-size:12px;margin-bottom:4px"></div>
+    <div id="boards"></div>
+    <div id="lines" class="lines"></div>
+  </section>
+  <section><h2>Principal variation</h2><ol id="pv"></ol></section>
+</div>
+<div id="empty">No decision on the table yet.<br>
+  Open a 2-player <b>Mighty Duel</b> table on BGA with the local server running
+  (<code>python -m kdagent.server --checkpoint gen10.best</code>).</div>
+
+<div id="dump-row">
+  <button id="dump-btn"
+    title="Save a full debug snapshot to the server (capture state, game data, DOM, advisor state) — click when something looks wrong, debug after the game">debug dump</button>
+  <span id="dump-status"></span>
+</div>
+<div class="lane">Read-only: this never clicks or plays. Live assistance in rated games is
+  against BGA's rules — private, friendly and hotseat tables only.</div>
+<script src="sidepanel.js"></script>
+</body>
+</html>

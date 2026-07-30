@@ -91,9 +91,8 @@ Speed never buys a correctness compromise; UI polish never buys an engine compro
 - **Scoring:** for each **territory** (orthogonally-connected same-terrain squares),
   `size × crowns`; sum over territories. Crownless territories score 0. Then variant
   bonuses: **Harmony** +5 (full gap-free 7×7), **Middle Kingdom** +10 (castle centered).
-- **Win:** highest score. Tie → **largest single territory** (most connected squares); still
-  tied → **most total crowns**; still tied → **shared victory**. (BGA ranks on
-  `player_score`, then `player_score_aux = biggestTerritory*100 + totalCrowns`.)
+- **Win:** highest score. Tie → **largest single territory** (most connected squares);
+  still tied → **shared victory**.
 
 ## 4. Algorithm direction (background — not the engine's concern)
 
@@ -122,19 +121,10 @@ The engine is **algorithm-agnostic**. Primary plan: **AlphaZero-style MCTS**, ad
   `docs/bga/README.md`); the `const DOMINOES` table in `src/components/domino.rs` is
   transcribed from it and guarded by tally tests. BGA's `mountain` = the mine terrain.
   **Do not fabricate tile data** (Space Base was burned by a fabricated placeholder CSV).
-- **Middle Kingdom / Harmony — RESOLVED (2026-06-07; corrected against BGA 2026-07-28).**
-  Both are **purely additive bonuses that never constrain legal play** (a board may have gaps
-  / an off-center castle; it just forfeits the points). **Middle Kingdom** = the occupied
-  bounding box is *symmetric about the castle* (not merely inside a castle-centered 7×7 —
-  that loosening was a divergence from BGA and is reverted). See `docs/engine-design.md` §7.
-- **BGA is the reference implementation.** The full BGA Studio source lives in `BGA Dump/`
-  (`kingdomino.game.php` is the authoritative backend). When a rule question comes up, read
-  it there; `board-game-engine/tests/bga_parity.rs` transcribes BGA's predicates and asserts
-  the engine agrees over whole games.
-- **Starting-claim order follows BGA, not the rulebook (decided 2026-07-28).** In 2p BGA
-  always uses the snake `A,B,B,A` (first player gets picks 1 and 4); only which seat is first
-  is random. The tabletop rulebook's random king draw would give 6 seat orders — we
-  deliberately do not model that, since the agent is aimed at BGA.
+- **Middle Kingdom / Harmony — RESOLVED (2026-06-07).** Both are **purely additive bonuses
+  that never constrain legal play** (a board may have gaps / an off-center castle; it just
+  forfeits the points). Geometric tests settled and implemented in `rules/score.rs` (see
+  `docs/engine-design.md` §7).
 
 ## 7. Conventions
 
@@ -156,22 +146,12 @@ The engine is **algorithm-agnostic**. Primary plan: **AlphaZero-style MCTS**, ad
 
 ```
 Kingdomino/
-├── CLAUDE.md                 # this file — durable project charter
+├── AGENTS.md                 # this file — durable project charter
 ├── Docs/rules.pdf            # the rulebook (source of rules truth for citations)
-├── BGA Dump/kingdomino/      # the reference implementation (see §6)
 ├── board-game-engine/        # the Rust engine crate (single source of rules truth)
 │   ├── src/{core,components,rules,utils}/
-│   │   └── core/rebuild.rs   # observed position → GameState (the advisor's way in)
 │   ├── docs/engine-design.md # GameState + action + scoring spec (review against this)
 │   ├── examples/  tests/
-├── agent/                    # search + learning (AlphaZero-style) — mirrors SpaceBase
-├── advisor/                  # BGA advisor: Chrome extension + the local server's brain
-│   ├── DESIGN.md             # architecture, snapshot dialect, what is and isn't covered
-│   └── extension/            # MV3: load unpacked via chrome://extensions
-└── web/                      # browser UI (static front-end over kdagent.server)
+├── agent/                    # search + learning (AlphaZero-style) — mirrors SpaceBase (to come)
+└── web/                      # browser UI (Rust→WASM + static front-end) — to come
 ```
-
-**The advisor is read-only.** It reads a live BGA table and shows advice; it never clicks,
-never plays, and cannot. Live assistance in *rated* games is against BGA's rules — it is for
-private/friendly/hotseat tables and post-game review. Keep it that way: nothing in
-`advisor/` may ever call a game control.

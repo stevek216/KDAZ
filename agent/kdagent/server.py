@@ -46,6 +46,9 @@ CONTENT_TYPES = {
 # A single local session (one game at a time).
 SESSION: dict = {}
 DEFAULTS: dict = {}  # CLI defaults for a new game
+# Score-head blend for net opponents (see mcts.evaluators.NetEvaluator). 0.75 is the measured
+# optimum: 52.3% +/- 1.8 over 3000 games on gen11 @512 sims, free — the head is already trained.
+VALUE_BLEND: float = 0.75
 
 # ---- BGA advisor state (one live table at a time, like the extension's side panel) ----
 # Constructed eagerly because it is cheap — no network is loaded until one is asked for, so
@@ -126,7 +129,7 @@ def new_game(params: dict) -> dict:
     opponent = params.get("opponent") or DEFAULTS["opponent"]
     device = params.get("device") or DEFAULTS["device"]
     # opponent fills the non-human seat; make_agent matches the arena specs.
-    agent = make_agent(opponent, seed=1, device=device)
+    agent = make_agent(opponent, seed=1, device=device, value_blend=VALUE_BLEND)
     SESSION.clear()
     SESSION.update({
         "game": kd.Game(seed, 2, harmony, middle),
@@ -311,6 +314,10 @@ def main():
     ap.add_argument("--opponent", default="mcts:128",
                     help="agent spec: mcts:SIMS | net:CKPT | netmcts:SIMS:CKPT")
     ap.add_argument("--device", default="cpu", help="torch device for net opponents (e.g. cuda)")
+    ap.add_argument("--value-blend", dest="value_blend", type=float, default=0.75,
+                    help="blend the score head into the search value of the UI opponent AND "
+                         "the BGA advisor. 0.75 is the measured optimum (52.3%% +/- 1.8 over "
+                         "3000 games on gen11 @512 sims); 0 = pure value head.")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--checkpoint", default=None,
@@ -321,9 +328,12 @@ def main():
     ap.add_argument("--record-dir", default="runs/bga",
                     help="where to log BGA snapshots + advice ('' to disable)")
     args = ap.parse_args()
+    global VALUE_BLEND
+    VALUE_BLEND = args.value_blend
     DEFAULTS.update({"opponent": args.opponent, "device": args.device})
     RECORD_DIR = Path(args.record_dir) if args.record_dir else None
-    ADVISOR = advisor_mod.Advisor(args.checkpoint, sims=args.sims, device=args.device)
+    ADVISOR = advisor_mod.Advisor(args.checkpoint, sims=args.sims, device=args.device,
+                                  value_blend=args.value_blend)
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Kingdomino — opponent {args.opponent} (device {args.device})")

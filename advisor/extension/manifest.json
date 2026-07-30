@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Kingdomino — net advisor (read-only)",
+  "version": "0.1.0",
+  "description": "Read-only Kingdomino advisor: reads the BGA table, asks a local model server, shows advice in the side panel. Never clicks or plays. Private/friendly tables only.",
+  "permissions": ["sidePanel", "storage", "tabs"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "Kingdomino advisor" },
+  "content_scripts": [
+    {
+      "matches": ["https://boardgamearena.com/*", "https://*.boardgamearena.com/*"],
+      "js": ["page-agent.js"],
+      "world": "MAIN",
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://boardgamearena.com/*", "https://*.boardgamearena.com/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ]
+}
