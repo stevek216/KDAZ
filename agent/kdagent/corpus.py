@@ -21,7 +21,7 @@ import os
 import numpy as np
 
 MAGIC = b"KDC1"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2   # v2 appends the MCTS root value after the boards; v1 stays readable
 HEADER_BYTES = 32
 
 # Field offsets inside a record that the loader reads directly (see pack.rs).
@@ -29,9 +29,13 @@ O_N_ACTIONS = 8
 O_GAME = 74
 
 
-def record_size(player_count: int) -> int:
-    """Bytes per record — must agree with `pack::record_size`."""
-    return 82 + 176 * player_count
+def record_size(player_count: int, version: int = FORMAT_VERSION) -> int:
+    """Bytes per record — must agree with `pack::record_size_v`.
+
+    v2 appends a 16-byte MCTS root value AFTER the boards, so a v1 record is a byte-identical
+    prefix of a v2 one: every earlier field keeps its offset and old corpora stay readable.
+    """
+    return 82 + 176 * player_count + (16 if version >= 2 else 0)
 
 
 class PackedCorpusWriter:
@@ -45,7 +49,7 @@ class PackedCorpusWriter:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.path = path
         self.player_count = player_count
-        self.rec_size = record_size(player_count)
+        self.rec_size = record_size(player_count, FORMAT_VERSION)
         self.n_records = 0
         self.n_policy = 0
         self._pol_path = path + ".pol.tmp"
@@ -108,16 +112,19 @@ class PackedCorpus:
         if len(head) < HEADER_BYTES or head[0:4] != MAGIC:
             raise ValueError(f"{path}: not a packed Kingdomino corpus (bad magic)")
         version = int.from_bytes(head[4:8], "little")
-        if version != FORMAT_VERSION:
-            raise ValueError(f"{path}: corpus format version {version}, this build reads {FORMAT_VERSION}")
+        if version < 1 or version > FORMAT_VERSION:
+            raise ValueError(
+                f"{path}: corpus format version {version}, this build reads up to {FORMAT_VERSION}")
+        self.version = version
         self.path = path
         self.player_count = int.from_bytes(head[8:12], "little")
         self.rec_size = int.from_bytes(head[12:16], "little")
         self.n_records = int.from_bytes(head[16:24], "little")
         self._policy_offset = int.from_bytes(head[24:32], "little")
-        if self.rec_size != record_size(self.player_count):
+        if self.rec_size != record_size(self.player_count, version):
             raise ValueError(
-                f"{path}: record_size {self.rec_size} disagrees with player_count {self.player_count}"
+                f"{path}: record_size {self.rec_size} disagrees with player_count "
+                f"{self.player_count} at format v{version}"
             )
 
         self.records = np.memmap(
@@ -156,7 +163,7 @@ class PackedCorpus:
 
     def __repr__(self) -> str:
         mb = (os.path.getsize(self.path)) / 2**20
-        return (f"PackedCorpus({self.path!r}, {self.n_records:,} records, "
+        return (f"PackedCorpus({self.path!r}, v{self.version}, {self.n_records:,} records, "
                 f"{self.player_count}p, {mb:,.0f} MiB)")
 
 

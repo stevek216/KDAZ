@@ -34,7 +34,23 @@ def gather_logits(place_map, claim_logits, discard, batch: Batch) -> torch.Tenso
     return logits.masked_fill(~batch.a_mask, float("-inf"))
 
 
-def losses(net: KingdominoNet, batch: Batch, value_coef: float, score_coef: float = 0.0):
+def value_target(batch: Batch, value_mix: float) -> torch.Tensor:
+    """The value head's target: the game outcome, optionally mixed with the MCTS root value.
+
+    The outcome is one win/loss shared by every position of a game whose result turns on unseen
+    draws -- a very high-variance label. The search's backed-up root value is a much quieter
+    estimate of the same quantity, and is recorded from v2 corpora onward. Records without one
+    (v1) fall back to the pure outcome, so a mixed window trains correctly.
+    """
+    if value_mix <= 0.0:
+        return batch.value_rel
+    m = batch.root_mask.unsqueeze(1).to(batch.value_rel.dtype)
+    mixed = (1.0 - value_mix) * batch.value_rel + value_mix * batch.root_rel
+    return m * mixed + (1.0 - m) * batch.value_rel
+
+
+def losses(net: KingdominoNet, batch: Batch, value_coef: float, score_coef: float = 0.0,
+           value_mix: float = 0.0):
     """Return (total, policy_ce, value_ce, score_huber, top1_acc)."""
     place_map, claim_logits, discard, value, score = net.forward_batch(
         batch.board, batch.lines, batch.glob, with_score=True)
@@ -42,7 +58,7 @@ def losses(net: KingdominoNet, batch: Batch, value_coef: float, score_coef: floa
     logp = torch.nan_to_num(torch.log_softmax(logits, dim=1), neginf=0.0)  # -inf·0 -> 0
     ploss = -(batch.policy * logp).sum(dim=1).mean()
     logv = torch.log_softmax(value[:, : batch.pc], dim=1)
-    vloss = -(batch.value_rel * logv).sum(dim=1).mean()
+    vloss = -(value_target(batch, value_mix) * logv).sum(dim=1).mean()
     # Auxiliary score target: only records that carry final scores (old corpora don't).
     if score_coef > 0 and bool(batch.score_mask.any()):
         m = batch.score_mask
@@ -72,13 +88,14 @@ def iter_batches(corpora, indices, batch_size, pc, rng, shuffle):
 
 
 @torch.no_grad()
-def evaluate(net, corpora, indices, batch_size, pc, value_coef, device, score_coef=0.0):
+def evaluate(net, corpora, indices, batch_size, pc, value_coef, device, score_coef=0.0,
+             value_mix=0.0):
     net.eval()
     tot = pl = vl = sl = ac = 0.0
     n = 0
     for batch in iter_batches(corpora, indices, batch_size, pc, None, shuffle=False):
         batch = batch.to(device)
-        _, p, v, sc, a = losses(net, batch, value_coef, score_coef)
+        _, p, v, sc, a = losses(net, batch, value_coef, score_coef, value_mix)
         bs = len(batch)
         tot += (p.item() + value_coef * v.item() + score_coef * sc.item()) * bs
         pl += p.item() * bs
@@ -102,6 +119,12 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", dest="weight_decay", type=float, default=1e-4)
     ap.add_argument("--value-coef", dest="value_coef", type=float, default=1.0)
+    ap.add_argument("--value-mix", dest="value_mix", type=float, default=0.0,
+                    help="mix the MCTS root value into the value target: "
+                         "(1-m)*outcome + m*root_value. The outcome is one win/loss shared "
+                         "across ~81 positions of a game decided partly by unseen draws; the "
+                         "root value is a far lower-variance estimate. Needs a v2 corpus; "
+                         "records without one fall back to the outcome. 0 = outcome only.")
     ap.add_argument("--score-coef", dest="score_coef", type=float, default=0.5,
                     help="weight of the auxiliary final-score head loss (0 = off; needs a "
                          "corpus with per-record 'scores')")
@@ -172,7 +195,8 @@ def main():
                                   shuffle=True):
             batch = batch.to(device)
             opt.zero_grad()
-            loss, p, v, sc, a = losses(net, batch, args.value_coef, args.score_coef)
+            loss, p, v, sc, a = losses(net, batch, args.value_coef, args.score_coef,
+                                        args.value_mix)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)
             opt.step()
@@ -181,7 +205,8 @@ def main():
         train_loss = run / max(steps, 1)
 
         val, vp, vv, vs, va = evaluate(net, test_corpora, val_idx, args.batch_size, args.players,
-                                       args.value_coef, device, args.score_coef)
+                                       args.value_coef, device, args.score_coef,
+                                       args.value_mix)
         dt = time.time() - t0
         is_best = val < best
         if is_best:

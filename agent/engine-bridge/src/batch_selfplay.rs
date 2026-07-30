@@ -253,6 +253,11 @@ struct GameSearch {
     // at drain time (packed corpus) or re-serialized (JSONL) rather than buffered as strings.
     rec_state: Vec<GameState>,
     rec_policy: Vec<Vec<f32>>,
+    /// Per recorded decision: the search's backed-up root value, absolute per seat on the
+    /// [0,1] win-probability scale. Far lower variance than the single game outcome, which is
+    /// one coin flip shared across all ~81 positions of a game whose result turns on unseen
+    /// draws. The trainer blends the two (`--value-mix`).
+    rec_root: Vec<Value>,
     /// Packed corpus output: `packed = true` fills `out_recs`/`out_pols`, else `out_lines`.
     packed: bool,
     out_recs: Vec<u8>,
@@ -334,6 +339,7 @@ impl GameSearch {
             pending_leaf: -1,
             rec_state: Vec::new(),
             rec_policy: Vec::new(),
+            rec_root: Vec::new(),
             packed,
             out_recs: Vec::new(),
             out_pols: Vec::new(),
@@ -515,8 +521,26 @@ impl GameSearch {
             .collect();
 
         if self.record {
+            // Root value = visit-weighted mean of the simulations through this node. wsum is on
+            // the [-1,1] search scale; the corpus stores win-probability, so map it back.
+            let mut rv = [0f32; MAX_PLAYERS];
+            if total > 0 {
+                for a in 0..n {
+                    for (k, r) in rv.iter_mut().enumerate().take(self.players) {
+                        *r += self.arena[root].wsum[a][k];
+                    }
+                }
+                for r in rv.iter_mut().take(self.players) {
+                    *r = (*r / total as f32 + 1.0) * 0.5;
+                }
+            } else {
+                for r in rv.iter_mut().take(self.players) {
+                    *r = 0.5;
+                }
+            }
             self.rec_state.push(self.arena[root].gs);
             self.rec_policy.push(policy.clone());
+            self.rec_root.push(rv);
         }
 
         let a = if self.cur_raw {
@@ -547,7 +571,12 @@ impl GameSearch {
             if self.packed {
                 let rsize = pack::record_size(pc);
                 let mut rec = vec![0u8; rsize];
-                for (state, policy) in self.rec_state.iter().zip(&self.rec_policy) {
+                for ((state, policy), root_v) in self
+                    .rec_state
+                    .iter()
+                    .zip(&self.rec_policy)
+                    .zip(&self.rec_root)
+                {
                     pack::pack_record(
                         &mut rec,
                         state,
@@ -555,6 +584,7 @@ impl GameSearch {
                         Some(&totals),
                         policy.len() as u16,
                         game,
+                        Some(root_v),
                     );
                     self.out_recs.extend_from_slice(&rec);
                     self.out_pols.extend_from_slice(policy);
@@ -576,6 +606,7 @@ impl GameSearch {
             }
             self.rec_state.clear();
             self.rec_policy.clear();
+            self.rec_root.clear();
             // Terminal snapshot (scores incl. bonus breakdown) for board-quality analysis.
             self.summaries.push(crate::obs_json(&self.gs));
         } else {

@@ -47,13 +47,16 @@ use kingdomino_engine::core::{
     Board, Cell, GameState, Phase, Slot, Variants, LINE, MAX_PLAYERS, STORE,
 };
 
-/// Bumped whenever the byte layout changes; the reader refuses other versions.
-pub const FORMAT_VERSION: u32 = 1;
+/// Bumped whenever the byte layout changes. v2 appends the MCTS root value AFTER the boards,
+/// so a v1 record is a byte-identical prefix of a v2 one and every v1 reader path still works.
+pub const FORMAT_VERSION: u32 = 2;
 pub const MAGIC: &[u8; 4] = b"KDC1";
 pub const HEADER_BYTES: usize = 32;
 
 const BOARD_BYTES: usize = STORE * STORE + 4 + 2 + 1; // cells + bbox + filled + present
 const REC_HEAD: usize = 82;
+/// v2 tail: the search's backed-up root value, f32 per seat.
+const ROOT_BYTES: usize = 4 * MAX_PLAYERS;
 
 // Field offsets within a record.
 const O_PC: usize = 0;
@@ -77,9 +80,21 @@ const O_BOARDS: usize = 82;
 const F_HARMONY: u8 = 1;
 const F_MIDDLE: u8 = 2;
 const F_HAS_SCORES: u8 = 4;
+const F_HAS_ROOT: u8 = 8;
 
-/// Bytes per record for a `pc`-seat corpus (434 for the 2-player target).
+/// Bytes per record for a `pc`-seat corpus at the current format (450 for the 2-player target).
 pub fn record_size(pc: usize) -> usize {
+    record_size_v(pc, FORMAT_VERSION)
+}
+
+/// Bytes per record for a given format version — v1 is 434 for 2p, v2 adds the 16-byte root
+/// value. Kept explicit so the reader can still map corpora written before v2.
+pub fn record_size_v(pc: usize, version: u32) -> usize {
+    REC_HEAD + BOARD_BYTES * pc + if version >= 2 { ROOT_BYTES } else { 0 }
+}
+
+/// Offset of the v2 root-value tail for a `pc`-seat record.
+fn root_offset(pc: usize) -> usize {
     REC_HEAD + BOARD_BYTES * pc
 }
 
@@ -204,9 +219,20 @@ pub fn pack_record(
     scores: Option<&[f32; MAX_PLAYERS]>,
     n_actions: u16,
     game_id: u64,
+    root_value: Option<&[f32; MAX_PLAYERS]>,
 ) {
     let pc = gs.player_count as usize;
-    debug_assert_eq!(out.len(), record_size(pc));
+    // A v1-sized buffer is legal as long as no root value is being written — v2 only appends,
+    // so the shorter buffer simply omits the tail.
+    debug_assert!(
+        out.len() >= record_size_v(pc, 1),
+        "record buffer {} too small for {pc}p",
+        out.len()
+    );
+    debug_assert!(
+        root_value.is_none() || out.len() >= record_size(pc),
+        "root value needs a v2-sized buffer"
+    );
     out.fill(0);
 
     out[O_PC] = gs.player_count;
@@ -224,6 +250,9 @@ pub fn pack_record(
     }
     if scores.is_some() {
         flags |= F_HAS_SCORES;
+    }
+    if root_value.is_some() {
+        flags |= F_HAS_ROOT;
     }
     out[O_FLAGS] = flags;
     put_u16(out, O_N_ACTIONS, n_actions);
@@ -249,6 +278,27 @@ pub fn pack_record(
         let at = O_BOARDS + seat * BOARD_BYTES;
         put_board(&mut out[at..at + BOARD_BYTES], &gs.boards[seat]);
     }
+    if let Some(rv) = root_value {
+        let at = root_offset(pc);
+        for (k, v) in rv.iter().enumerate() {
+            put_f32(out, at + k * 4, *v);
+        }
+    }
+}
+
+/// The search's backed-up root value for this record, or `None` for a v1 record (or one
+/// written without it). Absolute per seat, same [0,1] win-probability convention as `value`.
+pub fn unpack_root_value(rec: &[u8]) -> Option<[f32; MAX_PLAYERS]> {
+    let pc = rec[O_PC] as usize;
+    let at = root_offset(pc);
+    if rec[O_FLAGS] & F_HAS_ROOT == 0 || rec.len() < at + ROOT_BYTES {
+        return None;
+    }
+    let mut rv = [0f32; MAX_PLAYERS];
+    for (k, v) in rv.iter_mut().enumerate() {
+        *v = get_f32(rec, at + k * 4);
+    }
+    Some(rv)
 }
 
 /// The `GameState` stored in `rec`. Seats beyond `player_count` come back as absent boards,
@@ -331,6 +381,7 @@ pub fn record_game_id(rec: &[u8]) -> u64 {
 /// Corpus file header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
+    pub version: u32,
     pub player_count: u32,
     pub record_size: u32,
     pub n_records: u64,
@@ -341,7 +392,7 @@ impl Header {
     pub fn to_bytes(self) -> [u8; HEADER_BYTES] {
         let mut b = [0u8; HEADER_BYTES];
         b[0..4].copy_from_slice(MAGIC);
-        b[4..8].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        b[4..8].copy_from_slice(&self.version.to_le_bytes());
         b[8..12].copy_from_slice(&self.player_count.to_le_bytes());
         b[12..16].copy_from_slice(&self.record_size.to_le_bytes());
         put_u64(&mut b, 16, self.n_records);
@@ -357,20 +408,21 @@ impl Header {
             return Err("not a packed Kingdomino corpus (bad magic)".into());
         }
         let version = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
-        if version != FORMAT_VERSION {
+        if version == 0 || version > FORMAT_VERSION {
             return Err(format!(
-                "corpus format version {version}, this build reads {FORMAT_VERSION}"
+                "corpus format version {version}, this build reads up to {FORMAT_VERSION}"
             ));
         }
         let player_count = u32::from_le_bytes([b[8], b[9], b[10], b[11]]);
         let rec_size = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
-        let expect = record_size(player_count as usize) as u32;
+        let expect = record_size_v(player_count as usize, version) as u32;
         if rec_size != expect {
             return Err(format!(
                 "record_size {rec_size} disagrees with player_count {player_count} (expected {expect})"
             ));
         }
         Ok(Header {
+            version,
             player_count,
             record_size: rec_size,
             n_records: get_u64(b, 16),
@@ -410,6 +462,7 @@ mod tests {
                         legal_actions(&gs, &mut buf);
                         let value = [0.5, 0.5, 0.0, 0.0];
                         let scores = [61.0, 74.0, 0.0, 0.0];
+                        let root = [0.61f32, 0.39, 0.0, 0.0];
                         pack_record(
                             &mut rec,
                             &gs,
@@ -417,6 +470,7 @@ mod tests {
                             Some(&scores),
                             buf.len() as u16,
                             0xABCD_1234,
+                            Some(&root),
                         );
 
                         let back = unpack_state(&rec);
@@ -427,6 +481,7 @@ mod tests {
                         assert!(has);
                         assert_eq!(na as usize, buf.len());
                         assert_eq!(record_game_id(&rec), 0xABCD_1234);
+                        assert_eq!(unpack_root_value(&rec), Some(root));
 
                         // The targets-align-with-actions invariant.
                         let mut again = Vec::new();
@@ -451,23 +506,47 @@ mod tests {
     fn absent_scores_are_flagged() {
         let gs = new_game(2);
         let mut rec = vec![0u8; record_size(2)];
-        pack_record(&mut rec, &gs, &[1.0, 0.0, 0.0, 0.0], None, 4, 7);
+        pack_record(&mut rec, &gs, &[1.0, 0.0, 0.0, 0.0], None, 4, 7, None);
         let (_, scores, has, _) = unpack_targets(&rec);
         assert!(!has, "no scores supplied -> flag clear");
         assert_eq!(scores, [0.0; MAX_PLAYERS]);
         assert_eq!(record_game_id(&rec), 7);
+        assert_eq!(
+            unpack_root_value(&rec),
+            None,
+            "no root value supplied -> flag clear"
+        );
+    }
+
+    /// A v1 record (no root tail) must still decode: v2 only appends, so every earlier field
+    /// sits at the same offset and the 250k-game 512-sim archive stays readable.
+    #[test]
+    fn v1_records_still_decode() {
+        let gs = new_game(2);
+        let mut v1 = vec![0u8; record_size_v(2, 1)];
+        let value = [1.0f32, 0.0, 0.0, 0.0];
+        pack_record(&mut v1, &gs, &value, None, 4, 42, None);
+        assert_eq!(unpack_state(&v1), gs);
+        let (v, _, _, na) = unpack_targets(&v1);
+        assert_eq!(v, value);
+        assert_eq!(na, 4);
+        assert_eq!(record_game_id(&v1), 42);
+        assert_eq!(unpack_root_value(&v1), None);
     }
 
     #[test]
     fn record_size_matches_the_documented_layout() {
         assert_eq!(BOARD_BYTES, 176);
-        assert_eq!(record_size(2), 434);
-        assert_eq!(record_size(4), 786);
+        assert_eq!(record_size_v(2, 1), 434, "v1 layout is frozen");
+        assert_eq!(record_size_v(4, 1), 786);
+        assert_eq!(record_size(2), 450, "v2 appends 16 B of root value");
+        assert_eq!(record_size(4), 802);
     }
 
     #[test]
     fn header_round_trips_and_rejects_junk() {
         let h = Header {
+            version: FORMAT_VERSION,
             player_count: 2,
             record_size: record_size(2) as u32,
             n_records: 803_659,
@@ -484,6 +563,16 @@ mod tests {
         assert!(Header::from_bytes(&wrong_version)
             .unwrap_err()
             .contains("version"));
+
+        // A v1 header must still parse — the 250k-game archive predates v2.
+        let v1 = Header {
+            version: 1,
+            player_count: 2,
+            record_size: record_size_v(2, 1) as u32,
+            n_records: 10,
+            policy_offset: 99,
+        };
+        assert_eq!(Header::from_bytes(&v1.to_bytes()).unwrap(), v1);
 
         let mut mismatched = h.to_bytes();
         mismatched[12] = 1; // record_size no longer matches player_count

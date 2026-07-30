@@ -79,8 +79,10 @@ pub fn packed_record_json(record: PyReadonlyArray1<'_, u8>) -> PyResult<String> 
 /// `records` is `[B, record_size]` (C-contiguous), `policy` the concatenated visit
 /// distributions for exactly these records, and `offsets` the `[B + 1]` cumulative index into
 /// `policy`. Returns a dict with `board`, `lines`, `glob`, `a_type`, `a_pidx`, `a_ltok`,
-/// `a_mask`, `policy`, `value_rel`, `score_rel`, `score_mask`, `pc` — value/score vectors are
-/// seat-relative (the acting seat first); scores are raw totals, the caller scales them.
+/// `a_mask`, `policy`, `value_rel`, `score_rel`, `score_mask`, `root_rel`, `root_mask`, `pc` —
+/// value/score/root vectors are seat-relative (the acting seat first); scores are raw totals,
+/// the caller scales them. `root_rel` is the search's backed-up root value and `root_mask` is 0
+/// for v1 corpora, which predate it.
 #[pyfunction]
 pub fn encode_packed_batch<'py>(
     py: Python<'py>,
@@ -174,15 +176,22 @@ pub fn encode_packed_batch<'py>(
     let mut value_rel = vec![0f32; b * pc];
     let mut score_rel = vec![0f32; b * pc];
     let mut score_mask = vec![0u8; b];
+    let mut root_rel = vec![0f32; b * pc];
+    let mut root_mask = vec![0u8; b];
     for (i, gs) in states.iter().enumerate() {
         let rec = &flat[i * rsize..(i + 1) * rsize];
         let (value, scores, has_scores, _) = pack::unpack_targets(rec);
+        let root = pack::unpack_root_value(rec); // None for v1 corpora
         let ta = gs.to_act as usize;
         for k in 0..pc {
             value_rel[i * pc + k] = value[(ta + k) % pc];
             score_rel[i * pc + k] = scores[(ta + k) % pc];
+            if let Some(rv) = root {
+                root_rel[i * pc + k] = rv[(ta + k) % pc];
+            }
         }
         score_mask[i] = has_scores as u8;
+        root_mask[i] = root.is_some() as u8;
     }
 
     // Board / line / global planes, parallel across the batch (the bulk of the work).
@@ -269,6 +278,16 @@ pub fn encode_packed_batch<'py>(
     d.set_item(
         "score_mask",
         Array1::from_vec(score_mask).into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "root_rel",
+        Array2::from_shape_vec((b, pc), root_rel)
+            .unwrap()
+            .into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "root_mask",
+        Array1::from_vec(root_mask).into_pyarray_bound(py),
     )?;
     d.set_item("pc", pc)?;
     Ok(d)

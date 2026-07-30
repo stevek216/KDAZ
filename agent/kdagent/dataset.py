@@ -101,11 +101,15 @@ class Corpora:
         idx = np.asarray(idx, dtype=np.int64)
         part = np.searchsorted(self.bounds, idx, side="right") - 1
         local = idx - self.bounds[part]
-        rec_size = self.parts[0].rec_size
-        records = np.empty((len(idx), rec_size), dtype=np.uint8)
+        # A window may mix format versions while old corpora age out. v2 == v1 + a zeroed
+        # 16-byte tail, and v1 leaves the has-root flag clear, so widening a v1 record with
+        # zeros yields a valid v2-width record whose root value reads as absent.
+        rec_size = max(p.rec_size for p in self.parts)
+        records = np.zeros((len(idx), rec_size), dtype=np.uint8)
         counts = np.empty(len(idx), dtype=np.int64)
         for j, (p, l) in enumerate(zip(part, local)):
-            records[j] = self.parts[p].records[l]
+            row = self.parts[p].records[l]
+            records[j, :row.shape[0]] = row
             counts[j] = self.parts[p].n_actions[l]
         offsets = np.zeros(len(idx) + 1, dtype=np.int64)
         np.cumsum(counts, out=offsets[1:])
@@ -159,6 +163,8 @@ def _batch_from_rust(records: np.ndarray, policy: np.ndarray,
         torch.from_numpy(d["value_rel"]),
         torch.from_numpy(d["score_rel"]) / SCORE_SCALE,
         torch.from_numpy(d["score_mask"]).bool(),
+        torch.from_numpy(d["root_rel"]),
+        torch.from_numpy(d["root_mask"]).bool(),
         pc,
     )
 
@@ -176,6 +182,8 @@ class Batch:
     value_rel: torch.Tensor  # [B, pc] float32, seat-relative outcome target (self first)
     score_rel: torch.Tensor  # [B, pc] float32, seat-relative final score / SCORE_SCALE (0 if absent)
     score_mask: torch.Tensor  # [B] bool, record carried final scores (old corpora: False)
+    root_rel: torch.Tensor   # [B, pc] float32, MCTS backed-up root value, seat-relative
+    root_mask: torch.Tensor  # [B] bool, record carried a root value (v1 corpora: False)
     pc: int
 
     def to(self, device) -> "Batch":
@@ -183,7 +191,8 @@ class Batch:
             self.board.to(device), self.lines.to(device), self.glob.to(device),
             self.a_type.to(device), self.a_pidx.to(device), self.a_ltok.to(device),
             self.a_mask.to(device), self.policy.to(device), self.value_rel.to(device),
-            self.score_rel.to(device), self.score_mask.to(device), self.pc,
+            self.score_rel.to(device), self.score_mask.to(device),
+            self.root_rel.to(device), self.root_mask.to(device), self.pc,
         )
 
     def __len__(self) -> int:
@@ -249,5 +258,6 @@ def collate(records: list[dict], table=None, pc: int = 2) -> Batch:
         torch.from_numpy(board), torch.from_numpy(lines), torch.from_numpy(glob),
         torch.from_numpy(a_type), torch.from_numpy(a_pidx), torch.from_numpy(a_ltok),
         torch.from_numpy(a_mask), torch.from_numpy(policy), torch.from_numpy(value_rel),
-        torch.from_numpy(score_rel), torch.from_numpy(score_mask), pc,
+        torch.from_numpy(score_rel), torch.from_numpy(score_mask),
+        torch.zeros((b, pc), dtype=torch.float32), torch.zeros(b, dtype=torch.bool), pc,
     )
