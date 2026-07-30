@@ -141,3 +141,68 @@ so only the named variable moves. Numbers are win% with 95% CI.
 TOOLING NOTE: raw-vs-raw arena runs at ~2400 games/s vs ~15 with 512-sim search. 4000 games
 costs seconds and gives +/-1.5, so policy-quality questions should be asked raw, not through
 search.
+
+================================================================================
+2026-07-30  BLEND RE-MEASURED, GEN12 STILL PLATEAUED, ADVISOR ENDGAME BUG
+================================================================================
+
+1. THE SCORE-HEAD BLEND WAS UNTESTABLE FROM THE CLI -- and the bug looked like a
+   negative result. `--value-blend` was dropped entirely on the single-game path
+   (run_lineup built agents without it) and shared via one module global by both
+   nets on the batched path. Either way a "blend vs no blend" match pitted two
+   IDENTICAL agents against each other. A 240-game check read 44.6% and looked
+   like the blend losing; it was a null experiment.
+   Fixed: blend is per-agent on both paths, `--value-blend-b` sets B's.
+   RE-MEASURED on committed code, gen11 vs itself @512 sims, a=0.75 vs a=0:
+     52.3% +/- 1.8 over 3000 games   (CI excludes even -- the effect is real)
+   Also verified NetEvaluator (Python MCTS, behind the UI + BGA advisor) and
+   _gpu_forward (Rust batched pool) return an identical blended leaf value on the
+   same position to 1e-5. That agreement is what lets a batched-path measurement
+   transfer to the advisor.
+   METHOD NOTE: any A/B where both sides read one process-global setting is a null
+   experiment. Check that the two agents actually DIFFER before trusting a result.
+
+2. GEN11 -> GEN12 FAILED 3 MORE TIMES (blend 0.75 + value-mix 0.5, 50k games,
+   256 sims, window 4, ch 128, LCB gate, 1000-game eval vs gen11):
+     attempt 1: best epoch 4  49.5% +/- 3.1
+     attempt 2: best epoch 2  46.0% +/- 3.1
+     attempt 3: best epoch 2  48.8% +/- 3.1
+   CONFOUNDED, do not over-read: the loop's window ramps 1->4 generations over the
+   first four attempts, so attempts 1-3 trained on LESS data than the measured
+   optimum. Also note the epoch sweeps peak at epoch 2 and collapse by epoch 5
+   (a3: .451 .488 .483 .476 .387) -- the same overfit shape as before.
+   value-mix 0.5 remains UNMEASURED. Its data is sound though: root value std
+   0.244 vs outcome std 0.500, corr 0.52, 100% coverage on the v2 corpora. The
+   decomposition (train mix=0 on identical data) is still available -- all three
+   corpora were pulled to agent/data/selfplay before the pod was destroyed.
+
+3. ADVISOR ENDGAME BUG -- search is indifferent once the game is decided.
+   Real game, final placement, tile #48, three legal spots, ALL terminal:
+     +4  -> 107 vs 149    <- advisor picked this
+     +22 -> 125 vs 149
+     +3  -> 106 vs 149
+   Terminal children back up the engine's exact terminal_value(), NOT any network
+   head, and all three are [0,1] (a loss). So q = +0.0000 for all three, PUCT has
+   nothing to discriminate on, and visits collapse onto the policy prior
+   (366/248/186 exactly proportional to priors .457/.310/.233). It threw away 18
+   points. The score blend does NOT rescue this -- the blend only touches NETWORK
+   leaf evaluations, and there is no network evaluation at a terminal node. (Had
+   it been consulted it would have been right: blended value .0374 for the +22 vs
+   .0043 for the +4.)
+   SCOPE, measured over 4 recorded games / 227 decisions: Q collapses in 3 (1.3%),
+   ALL of them round 11, the final placement -- the only decision where every child
+   is terminal. And it costs nothing unless the game is already decided; if the
+   result is still in doubt the terminal values DIFFER and search picks correctly.
+   Fix (not yet applied): break exact-Q ties at the root by the engine's exact
+   final score. Do NOT put margin into terminal_value() -- the corpus stores
+   `value` as the terminal outcome, so that would silently change every training
+   target too.
+
+4. OPEN DESIGN QUESTION: should the value head predict final score? Note the
+   current blend is NOT margin-seeking -- it passes margin through
+   sigmoid(6.139*margin/50), i.e. it turns score back into a win probability, and
+   it saturates (one extra point is worth .023 at even, .0003 at +45). That
+   saturation IS risk adjustment: win-prob maximization correctly seeks variance
+   when behind and avoids it when ahead, which a risk-neutral score objective
+   discards. Worth testing empirically on the saved v2 corpora rather than
+   assuming either way.
